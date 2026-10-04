@@ -5,16 +5,21 @@ import math
 from collections import deque
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import cast
 
+import cv2
 import numpy as np
 from omegaconf import DictConfig
 
-from ..ch_ppocr_rec import TextRecognizer, TextRecOutput
-from ..ch_ppocr_rec.typings import WordInfo
+from ..ch_ppocr_rec.typings import TextRecOutput, WordInfo
+from ..ch_ppocr_rec.utils import CTCLabelDecode
+from ..inference_engine.base import FileInfo, InferSession, get_engine
+from ..utils.download_file import DownloadFile, DownloadFileInput
+from ..utils.log import logger
 from ..utils.model_resolver import normalize_lang
 from ..utils.typings import LangRec
-from ..utils.utils import reorder_bidi_for_display
+from ..utils.utils import reorder_bidi_for_display, validate_rtl_dependency
 from .typing import HWCImage
 
 RecLine = tuple[str, float]
@@ -48,22 +53,62 @@ class RecPipeline:
         self._executor = ThreadPoolExecutor(max_workers=concurrency)
         self._worker: asyncio.Task[None] | None = None
         self._closed = False
-        self._model: TextRecognizer | None = None
+        self._shape: tuple[int, int, int] = tuple(cfg.rec_img_shape)
+        self._session: InferSession | None = None
+        self._postprocess: CTCLabelDecode | None = None
 
     async def start(self, warmup: bool = True) -> None:
         loop = asyncio.get_running_loop()
-        factory = cast(Callable[[DictConfig], TextRecognizer], TextRecognizer)
-        self._model = await loop.run_in_executor(self._executor, factory, self._cfg)
-        assert self._model is not None
+        if normalize_lang(self._cfg.lang_type) == LangRec.ARABIC.value:
+            validate_rtl_dependency()
+        factory = cast(
+            Callable[[DictConfig], InferSession], get_engine(self._cfg.engine_type)
+        )
+        self._session = factory(self._cfg)
+        character, path = self._load_characters()
+        self._postprocess = CTCLabelDecode(character=character, character_path=path)
         if warmup:
-            c, h, _ = self._model.rec_image_shape
+            c, h, _ = self._shape
             for w in self._widths:
                 await loop.run_in_executor(
                     self._executor,
-                    self._model.session,
+                    self._session,
                     np.zeros((self._batch_size, c, h, w), np.float32),
                 )
         self._worker = loop.create_task(self._run_batches())
+
+    def _load_characters(self) -> tuple[list[str] | None, str | Path | None]:
+        assert self._session is not None
+        cfg = self._cfg
+        path = cfg.get("rec_keys_path")
+        if self._session.have_key():
+            return self._session.get_character_list(), path
+        if path and Path(path).exists():
+            return None, path
+        url = self._session.get_dict_key_url(
+            FileInfo(
+                engine_type=cfg.engine_type,
+                ocr_version=cfg.ocr_version,
+                task_type=cfg.task_type,
+                lang_type=cfg.lang_type,
+                model_type=cfg.model_type,
+            )
+        ) or (
+            "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v2.0.7/"
+            "paddle/PP-OCRv4/rec/ch_PP-OCRv4_rec_infer/ppocr_keys_v1.txt"
+        )
+        root = (
+            cfg.get("model_root_dir")
+            or Path(__file__).resolve().parent.parent / "models"
+        )
+        path = Path(root) / Path(url).name
+        if not path.exists():
+            DownloadFile.run(
+                DownloadFileInput(
+                    file_url=url, sha256=None, save_path=path, logger=logger
+                )
+            )
+        return None, path
 
     async def _run_batches(self) -> None:
         loop = asyncio.get_running_loop()
@@ -128,8 +173,8 @@ class RecPipeline:
                     future.set_exception(exc)
 
     async def recognize(self, images: list[HWCImage]) -> TextRecOutput:
-        assert self._model is not None
-        height = self._model.rec_image_shape[1]
+        assert self._session is not None
+        height = self._shape[1]
         futures: list[asyncio.Future[RecResult]] = []
         for image in images:
             width = math.ceil(height * image.shape[1] / image.shape[0])
@@ -159,15 +204,19 @@ class RecPipeline:
         width: int,
         images: list[HWCImage],
     ) -> list[RecResult]:
-        assert self._model is not None
-        c, h, _ = self._model.rec_image_shape
+        assert self._session is not None and self._postprocess is not None
+        c, h, _ = self._shape
         tensor = np.zeros((self._batch_size, c, h, width), np.float32)
         ratios = [img.shape[1] / img.shape[0] for img in images]
         max_ratio = width / h
         for i, image in enumerate(images):
-            tensor[i] = self._model.resize_norm_img(image, max_ratio)
-        preds = self._model.session(tensor)[: len(images)]
-        lines, words = self._model.postprocess_op(
+            resized_width = min(width, math.ceil(h * ratios[i]))
+            resized = cv2.resize(image, (resized_width, h)).astype(np.float32)
+            tensor[i, :, :, :resized_width] = (
+                resized.transpose(2, 0, 1) / 255 - 0.5
+            ) / 0.5
+        preds = self._session(tensor)[: len(images)]
+        lines, words = self._postprocess(
             preds,
             self._return_word_box,
             wh_ratio_list=ratios,
