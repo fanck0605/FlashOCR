@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import Iterable
 from pathlib import Path
 from types import TracebackType
-from typing import Any, cast
+from typing import Any, Self, cast
 
 import numpy as np
 from omegaconf import DictConfig
@@ -27,7 +27,7 @@ from ..utils.vis_res import VisRes
 from .cls_pipeline import ClsPipeline
 from .det_pipeline import DetPipeline
 from .rec_pipeline import RecPipeline
-from .typings import HWCImage
+from .typing import HWCImage
 
 
 class RapidOCRv2:
@@ -100,7 +100,7 @@ class RapidOCRv2:
         cfg.Rec.font_path = cfg.Global.font_path
         return cfg
 
-    async def start(self) -> RapidOCRv2:
+    async def start(self) -> Self:
         if self._closed:
             raise RuntimeError("OCR is closed")
         if self._start_task is None:
@@ -261,7 +261,7 @@ class RapidOCRv2:
         if self._rec_pipeline is not None:
             await self._rec_pipeline.close()
 
-    async def __aenter__(self) -> RapidOCRv2:
+    async def __aenter__(self) -> Self:
         return await self.start()
 
     async def __aexit__(

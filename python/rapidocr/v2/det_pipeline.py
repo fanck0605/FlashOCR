@@ -13,7 +13,7 @@ from omegaconf import DictConfig
 from ..ch_ppocr_det.utils import DBPostProcess, DetPreProcess, TextDetOutput
 from ..inference_engine.base import InferSession, get_engine
 from ..utils.process_img import get_rotate_crop_image
-from .typings import HWCImage
+from .typing import HWCImage
 
 DetShape = tuple[int, int]
 
@@ -136,12 +136,7 @@ class DetPipeline:
     async def _infer_and_resolve(
         self,
         shape: DetShape,
-        pending: list[
-            tuple[
-                HWCImage,
-                asyncio.Future[DetResult],
-            ]
-        ],
+        pending: list[tuple[HWCImage, asyncio.Future[DetResult]]],
     ) -> None:
         try:
             results = await self._infer(shape, [item for item, _ in pending])

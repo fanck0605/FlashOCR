@@ -15,7 +15,7 @@ from ..ch_ppocr_rec.typings import WordInfo
 from ..utils.model_resolver import normalize_lang
 from ..utils.typings import LangRec
 from ..utils.utils import reorder_bidi_for_display
-from .typings import HWCImage
+from .typing import HWCImage
 
 RecLine = tuple[str, float]
 RecResult = tuple[RecLine, WordInfo | None]

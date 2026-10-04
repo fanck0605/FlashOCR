@@ -14,7 +14,7 @@ from omegaconf import DictConfig
 from ..ch_ppocr_cls.main import CLS_SHAPE_BY_OCR_VERSION
 from ..ch_ppocr_cls.utils import ClsPostProcess, TextClsOutput
 from ..inference_engine.base import InferSession, get_engine
-from .typings import HWCImage
+from .typing import HWCImage
 
 ClsResult = tuple[HWCImage, tuple[str, float]]
 ClsQueueItem = tuple[
