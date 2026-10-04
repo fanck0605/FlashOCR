@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock, patch
 
 import numpy as np
 from omegaconf import OmegaConf
@@ -14,14 +14,19 @@ from rapidocr.v2.typing import HWCImage
 
 class TestDetBatching(unittest.IsolatedAsyncioTestCase):
     def make_pipeline(self, max_wait: float = 0.005) -> DetPipeline:
-        cfg = OmegaConf.create({"limit_side_len": 960, "limit_type": "max"})
-        return DetPipeline(
-            cfg,
-            [(32, 32), (64, 64)],
-            batch_size=2,
-            max_wait=max_wait,
-            concurrency=2,
+        cfg = OmegaConf.create(
+            {"limit_side_len": 960, "limit_type": "max", "engine_type": "fake"}
         )
+        with patch("rapidocr.v2.det_pipeline.get_engine", return_value=Mock()):
+            pipeline = DetPipeline(
+                cfg,
+                [(32, 32), (64, 64)],
+                batch_size=2,
+                max_wait=max_wait,
+                concurrency=2,
+            )
+        self.assertFalse(hasattr(pipeline, "_cfg"))
+        return pipeline
 
     async def test_full_and_partial_batches_across_buckets(self) -> None:
         pipeline = self.make_pipeline()

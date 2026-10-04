@@ -34,11 +34,11 @@ class TestClsPipeline(unittest.TestCase):
                     "label_list": ["0", "180"],
                 }
             )
-            pipeline = ClsPipeline(cfg, batch_size=4, max_wait=0.005)
             with patch(
                 "rapidocr.v2.cls_pipeline.get_engine", return_value=lambda cfg: session
             ):
-                await pipeline.start()
+                pipeline = ClsPipeline(cfg, batch_size=4, max_wait=0.005)
+            await pipeline.start()
             image = np.arange(6 * 8 * 3, dtype=np.uint8).reshape(6, 8, 3)
             try:
                 left, right = await asyncio.wait_for(

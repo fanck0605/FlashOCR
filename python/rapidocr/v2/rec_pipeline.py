@@ -39,7 +39,25 @@ class RecPipeline:
     ) -> None:
         if concurrency < 1:
             raise ValueError("Recognition concurrency must be positive")
-        self._cfg = cfg
+        self._is_arabic = normalize_lang(cfg.lang_type) == LangRec.ARABIC.value
+        self._rec_keys_path: str | Path | None = cfg.get("rec_keys_path")
+        self._model_root_dir = Path(
+            cfg.get("model_root_dir")
+            or Path(__file__).resolve().parent.parent / "models"
+        )
+        self._file_info = FileInfo(
+            engine_type=cfg.engine_type,
+            ocr_version=cfg.ocr_version,
+            task_type=cfg.task_type,
+            lang_type=cfg.lang_type,
+            model_type=cfg.model_type,
+        )
+        if self._is_arabic:
+            validate_rtl_dependency()
+        factory = cast(
+            Callable[[DictConfig], InferSession], get_engine(cfg.engine_type)
+        )
+        self._session = factory(cfg)
         self._return_word_box = return_word_box
         self._widths = tuple(sorted(set(widths)))
         self._batch_size = batch_size
@@ -54,17 +72,10 @@ class RecPipeline:
         self._worker: asyncio.Task[None] | None = None
         self._closed = False
         self._shape: tuple[int, int, int] = tuple(cfg.rec_img_shape)
-        self._session: InferSession | None = None
         self._postprocess: CTCLabelDecode | None = None
 
     async def start(self, warmup: bool = True) -> None:
         loop = asyncio.get_running_loop()
-        if normalize_lang(self._cfg.lang_type) == LangRec.ARABIC.value:
-            validate_rtl_dependency()
-        factory = cast(
-            Callable[[DictConfig], InferSession], get_engine(self._cfg.engine_type)
-        )
-        self._session = factory(self._cfg)
         character, path = self._load_characters()
         self._postprocess = CTCLabelDecode(character=character, character_path=path)
         if warmup:
@@ -79,29 +90,16 @@ class RecPipeline:
 
     def _load_characters(self) -> tuple[list[str] | None, str | Path | None]:
         assert self._session is not None
-        cfg = self._cfg
-        path = cfg.get("rec_keys_path")
+        path = self._rec_keys_path
         if self._session.have_key():
             return self._session.get_character_list(), path
         if path and Path(path).exists():
             return None, path
-        url = self._session.get_dict_key_url(
-            FileInfo(
-                engine_type=cfg.engine_type,
-                ocr_version=cfg.ocr_version,
-                task_type=cfg.task_type,
-                lang_type=cfg.lang_type,
-                model_type=cfg.model_type,
-            )
-        ) or (
+        url = self._session.get_dict_key_url(self._file_info) or (
             "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v2.0.7/"
             "paddle/PP-OCRv4/rec/ch_PP-OCRv4_rec_infer/ppocr_keys_v1.txt"
         )
-        root = (
-            cfg.get("model_root_dir")
-            or Path(__file__).resolve().parent.parent / "models"
-        )
-        path = Path(root) / Path(url).name
+        path = self._model_root_dir / Path(url).name
         if not path.exists():
             DownloadFile.run(
                 DownloadFileInput(
@@ -189,7 +187,7 @@ class RecPipeline:
         results = await asyncio.gather(*futures)
         lines, words = zip(*results)
         texts, scores = zip(*lines)
-        if normalize_lang(self._cfg.lang_type) == LangRec.ARABIC.value:
+        if self._is_arabic:
             texts = reorder_bidi_for_display(texts)
         return TextRecOutput(
             images,

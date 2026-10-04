@@ -29,7 +29,10 @@ class DetPipeline:
         max_wait: float = 0.003,
         concurrency: int = 1,
     ) -> None:
-        self._cfg = cfg
+        factory = cast(
+            Callable[[DictConfig], InferSession], get_engine(cfg.engine_type)
+        )
+        self._session = factory(cfg)
         self._preprocess = DetPreProcess(
             cfg.limit_side_len,
             cfg.limit_type,
@@ -64,12 +67,10 @@ class DetPipeline:
         self._executor = ThreadPoolExecutor(max_workers=concurrency)
         self._worker: asyncio.Task[None] | None = None
         self._closed = False
-        self._session: InferSession | None = None
         self._inflight: set[asyncio.Task[None]] = set()
 
     async def start(self, warmup: bool = True) -> None:
         loop = asyncio.get_running_loop()
-        self._session = self._load_session()
         if warmup:
             for h, w in self._buckets:
                 await loop.run_in_executor(
@@ -78,12 +79,6 @@ class DetPipeline:
                     np.zeros((self._batch_size, 3, h, w), np.float32),
                 )
         self._worker = loop.create_task(self._run_batches())
-
-    def _load_session(self) -> InferSession:
-        factory = cast(
-            Callable[[DictConfig], InferSession], get_engine(self._cfg.engine_type)
-        )
-        return factory(self._cfg)
 
     async def _run_batches(self) -> None:
         loop = asyncio.get_running_loop()

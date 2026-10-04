@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import unittest
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import numpy as np
 from omegaconf import OmegaConf
@@ -18,11 +18,14 @@ class TestStageBatching(unittest.IsolatedAsyncioTestCase):
         cfg = OmegaConf.create(
             {
                 "ocr_version": OCRVersion.PPOCRV4,
+                "engine_type": "fake",
                 "cls_thresh": 0.9,
                 "label_list": ["0", "180"],
             }
         )
-        pipeline = ClsPipeline(cfg, batch_size=2, max_wait=10)
+        with patch("rapidocr.v2.cls_pipeline.get_engine", return_value=Mock()):
+            pipeline = ClsPipeline(cfg, batch_size=2, max_wait=10)
+        self.assertFalse(hasattr(pipeline, "_cfg"))
         image = np.zeros((8, 8, 3), np.uint8)
         pipeline._infer = AsyncMock(return_value=[(image, ("0", 1.0))] * 2)
         pipeline._worker = asyncio.create_task(pipeline._run_batches())
@@ -44,16 +47,24 @@ class TestStageBatching(unittest.IsolatedAsyncioTestCase):
         cfg = OmegaConf.create(
             {
                 "ocr_version": OCRVersion.PPOCRV4,
+                "engine_type": "fake",
+                "lang_type": "ch",
+                "task_type": "rec",
+                "model_type": "mobile",
+                "rec_img_shape": [3, 48, 320],
                 "cls_thresh": 0.9,
                 "label_list": ["0", "180"],
             }
         )
         if stage == "cls":
-            pipeline = ClsPipeline(cfg, batch_size=2, max_wait=10, concurrency=2)
+            with patch("rapidocr.v2.cls_pipeline.get_engine", return_value=Mock()):
+                pipeline = ClsPipeline(cfg, batch_size=2, max_wait=10, concurrency=2)
         else:
-            pipeline = RecPipeline(
-                cfg, widths=[32, 64], batch_size=2, max_wait=10, concurrency=2
-            )
+            with patch("rapidocr.v2.rec_pipeline.get_engine", return_value=Mock()):
+                pipeline = RecPipeline(
+                    cfg, widths=[32, 64], batch_size=2, max_wait=10, concurrency=2
+                )
+        self.assertFalse(hasattr(pipeline, "_cfg"))
         loop = asyncio.get_running_loop()
         release = threading.Event()
         saturated = asyncio.Event()

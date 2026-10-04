@@ -38,7 +38,10 @@ class ClsPipeline:
             raise ValueError("Invalid CLS batch size or wait time")
         if concurrency < 1:
             raise ValueError("Classification concurrency must be positive")
-        self._cfg = cfg
+        factory = cast(
+            Callable[[DictConfig], InferSession], get_engine(cfg.engine_type)
+        )
+        self._session = factory(cfg)
         self._shape = tuple(CLS_SHAPE_BY_OCR_VERSION[cfg.ocr_version])
         self._threshold: float = cfg.cls_thresh
         self._postprocess = ClsPostProcess(cfg.label_list)
@@ -50,14 +53,9 @@ class ClsPipeline:
         self._inflight: set[asyncio.Task[None]] = set()
         self._executor = ThreadPoolExecutor(max_workers=concurrency)
         self._worker: asyncio.Task[None] | None = None
-        self._session: InferSession | None = None
         self._closed = False
 
     async def start(self, warmup: bool = True) -> None:
-        factory = cast(
-            Callable[[DictConfig], InferSession], get_engine(self._cfg.engine_type)
-        )
-        self._session = factory(self._cfg)
         loop = asyncio.get_running_loop()
         if warmup:
             await loop.run_in_executor(
