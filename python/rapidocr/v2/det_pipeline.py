@@ -9,8 +9,8 @@ import cv2
 import numpy as np
 from omegaconf import DictConfig
 
-from ..ch_ppocr_det import TextDetector, TextDetOutput
-
+from ..ch_ppocr_det.utils import DBPostProcess, DetPreProcess, TextDetOutput
+from ..inference_engine.base import InferSession, get_engine
 from ..utils.process_img import get_rotate_crop_image
 
 DetShape = tuple[int, int]
@@ -28,6 +28,17 @@ class DetPipeline:
         max_wait_ms: float = 3,
     ) -> None:
         self._cfg = cfg
+        self._preprocess = DetPreProcess(
+            cfg.limit_side_len, cfg.limit_type, cfg.get("mean"), cfg.get("std")
+        )
+        self._postprocess = DBPostProcess(
+            thresh=cfg.get("thresh", 0.3),
+            box_thresh=cfg.get("box_thresh", 0.5),
+            max_candidates=cfg.get("max_candidates", 1000),
+            unclip_ratio=cfg.get("unclip_ratio", 1.6),
+            use_dilation=cfg.get("use_dilation", True),
+            score_mode=cfg.get("score_mode", "fast"),
+        )
         self._buckets = tuple(
             sorted(set(tuple(b) for b in buckets), key=lambda b: b[0] * b[1])
         )
@@ -38,21 +49,22 @@ class DetPipeline:
         self._executor = ThreadPoolExecutor(max_workers=1)
         self._worker: asyncio.Task[None] | None = None
         self._closed = False
-        self._model: TextDetector | None = None
+        self._session: InferSession | None = None
 
     async def start(self, warmup: bool = True) -> None:
         loop = asyncio.get_running_loop()
-        self._model = await loop.run_in_executor(
-            self._executor, TextDetector, self._cfg
-        )
+        self._session = self._load_session()
         if warmup:
             for h, w in self._buckets:
                 await loop.run_in_executor(
                     self._executor,
-                    self._model.session,
+                    self._session,
                     np.zeros((self._batch_size, 3, h, w), np.float32),
                 )
         self._worker = loop.create_task(self._run_batches())
+
+    def _load_session(self) -> InferSession:
+        return get_engine(self._cfg.engine_type)(self._cfg)
 
     async def _run_batches(self) -> None:
         loop = asyncio.get_running_loop()
@@ -87,9 +99,7 @@ class DetPipeline:
             if not pending:
                 continue
             try:
-                results = await loop.run_in_executor(
-                    self._executor, self._infer, shape, [item for item, _ in pending]
-                )
+                results = await self._infer(shape, [item for item, _ in pending])
                 for (_, future), result in zip(pending, results):
                     if not future.done():
                         future.set_result(result)
@@ -99,9 +109,7 @@ class DetPipeline:
                         future.set_exception(exc)
 
     def _prepare(self, img: np.ndarray) -> tuple[DetShape, np.ndarray]:
-        assert self._model is not None
-        pre = self._model.get_preprocess()
-        resized = pre.resize(img)
+        resized = self._preprocess.resize(img)
         if resized is None:
             raise ValueError("Cannot resize image")
         h, w = resized.shape[:2]
@@ -130,15 +138,18 @@ class DetPipeline:
         self._wakeup.set()
         return await future
 
-    def _infer(self, bucket: DetShape, items: list[DetInput]) -> list[DetResult]:
-        assert self._model is not None
+    async def _infer(self, bucket: DetShape, items: list[DetInput]) -> list[DetResult]:
+        assert self._session is not None
         bh, bw = bucket
-        pre = self._model.get_preprocess()
+        pre = self._preprocess
         tensor = np.zeros((self._batch_size, 3, bh, bw), np.float32)
         for i, (_, resized) in enumerate(items):
             h, w = resized.shape[:2]
             tensor[i, :, :h, :w] = pre.permute(pre.normalize(resized))
-        preds = self._model.session(tensor)
+            await asyncio.sleep(0)
+        preds = await asyncio.get_running_loop().run_in_executor(
+            self._executor, self._session, tensor
+        )
         outputs: list[DetResult] = []
         for i, (img, resized) in enumerate(items):
             h, w = resized.shape[:2]
@@ -146,7 +157,7 @@ class DetPipeline:
             valid = preds[
                 i : i + 1, :, : max(1, round(h * ph / bh)), : max(1, round(w * pw / bw))
             ]
-            boxes, scores = self._model.postprocess_op(valid, resized.shape[:2])
+            boxes, scores = self._postprocess(valid, resized.shape[:2])
             if len(boxes):
                 boxes = boxes.astype(np.float32)
                 boxes[:, :, 0] *= img.shape[1] / resized.shape[1]
@@ -155,10 +166,14 @@ class DetPipeline:
                 boxes = boxes[order]
                 scores = [scores[j] for j in order]
                 result = TextDetOutput(img, boxes.astype(np.int32), scores)
-                crops = [get_rotate_crop_image(img, box.copy()) for box in boxes]
+                crops = []
+                for box in boxes:
+                    crops.append(get_rotate_crop_image(img, box.copy()))
+                    await asyncio.sleep(0)
             else:
                 result, crops = TextDetOutput(), []
             outputs.append((result, crops))
+            await asyncio.sleep(0)
         return outputs
 
     async def close(self) -> None:
