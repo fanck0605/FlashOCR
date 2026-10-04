@@ -28,16 +28,16 @@ class ClsPipeline:
     """Cross-request classification with one fixed input and batch shape."""
 
     def __init__(
-        self, cfg: DictConfig, batch_size: int = 16, max_wait_ms: float = 3
+        self, cfg: DictConfig, batch_size: int = 16, max_wait: float = 0.003
     ) -> None:
-        if batch_size < 1 or max_wait_ms < 0:
+        if batch_size < 1 or max_wait < 0:
             raise ValueError("Invalid CLS batch size or wait time")
         self._cfg = cfg
         self._shape = tuple(CLS_SHAPE_BY_OCR_VERSION[cfg.ocr_version])
         self._threshold: float = cfg.cls_thresh
         self._postprocess = ClsPostProcess(cfg.label_list)
         self._batch_size = batch_size
-        self._max_wait = max_wait_ms / 1000
+        self._max_wait = max_wait
         self._queue: deque[ClsQueueItem] = deque()
         self._wakeup = asyncio.Event()
         self._executor = ThreadPoolExecutor(max_workers=1)

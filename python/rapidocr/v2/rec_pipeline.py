@@ -32,14 +32,14 @@ class RecPipeline:
         cfg: DictConfig,
         widths: Iterable[int] = (320, 640, 960, 1280, 1920),
         batch_size: int = 16,
-        max_wait_ms: float = 3,
+        max_wait: float = 0.003,
         return_word_box: bool = False,
     ) -> None:
         self._cfg = cfg
         self._return_word_box = return_word_box
         self._widths = tuple(sorted(set(widths)))
         self._batch_size = batch_size
-        self._max_wait = max_wait_ms / 1000
+        self._max_wait = max_wait
         self._queues: dict[int, deque[RecQueueItem]] = {}
         self._wakeup = asyncio.Event()
         self._executor = ThreadPoolExecutor(max_workers=1)

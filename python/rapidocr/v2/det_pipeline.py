@@ -32,12 +32,15 @@ class DetPipeline:
         cfg: DictConfig,
         buckets: Iterable[DetShape],
         batch_size: int = 4,
-        max_wait_ms: float = 3,
+        max_wait: float = 0.003,
         concurrency: int = 1,
     ) -> None:
         self._cfg = cfg
         self._preprocess = DetPreProcess(
-            cfg.limit_side_len, cfg.limit_type, cfg.get("mean"), cfg.get("std")
+            cfg.limit_side_len,
+            cfg.limit_type,
+            mean=cfg.get("mean"),
+            std=cfg.get("std"),
         )
         self._postprocess = DBPostProcess(
             thresh=cfg.get("thresh", 0.3),
@@ -56,7 +59,7 @@ class DetPipeline:
                     f"Detection bucket dimensions must be positive multiples of 32: {(h, w)}"
                 )
         self._batch_size = batch_size
-        self._max_wait = max_wait_ms / 1000
+        self._max_wait = max_wait
         if concurrency < 1:
             raise ValueError("Detection concurrency must be positive")
         self._concurrency = concurrency
@@ -93,44 +96,46 @@ class DetPipeline:
         while True:
             self._inflight = {task for task in self._inflight if not task.done()}
             if len(self._inflight) >= self._concurrency:
-                if self._closed:
-                    await asyncio.gather(*self._inflight, return_exceptions=True)
-                    return
                 done, _ = await asyncio.wait(
                     self._inflight, return_when=asyncio.FIRST_COMPLETED
                 )
                 self._inflight.difference_update(done)
                 continue
             self._wakeup.clear()
-            active = [(shape, queue) for shape, queue in self._queues.items() if queue]
-            if not active:
-                if self._closed:
-                    return
-                await self._wakeup.wait()
-                continue
             now = loop.time()
-            ready = [
-                (shape, queue)
-                for shape, queue in active
-                if self._closed
-                or len(queue) >= self._batch_size
-                or now - queue[0][0] >= self._max_wait
-            ]
-            if not ready:
-                delay = min(queue[0][0] + self._max_wait - now for _, queue in active)
+            selected: DetShape | None = None
+            oldest = float("inf")
+            deadline = float("inf")
+            for shape, queue in self._queues.items():
+                if not queue:
+                    continue
+                arrived = queue[0][0]
+                expires = arrived + self._max_wait
+                deadline = min(deadline, expires)
+                if (
+                    self._closed or len(queue) >= self._batch_size or expires <= now
+                ) and arrived < oldest:
+                    selected, oldest = shape, arrived
+            if selected is None:
+                if deadline == float("inf"):
+                    if self._closed:
+                        return
+                    await self._wakeup.wait()
+                    continue
                 try:
-                    await asyncio.wait_for(self._wakeup.wait(), delay)
+                    await asyncio.wait_for(self._wakeup.wait(), deadline - now)
                 except asyncio.TimeoutError:
                     pass
                 continue
-            shape, queue = min(ready, key=lambda entry: entry[1][0][0])
-            batch = [queue.popleft() for _ in range(min(len(queue), self._batch_size))]
-            pending = [
-                (item, future) for _, item, future in batch if not future.cancelled()
-            ]
+            queue = self._queues[selected]
+            pending: list[tuple[HWCImage, asyncio.Future[DetResult]]] = []
+            for _ in range(min(len(queue), self._batch_size)):
+                _, item, future = queue.popleft()
+                if not future.cancelled():
+                    pending.append((item, future))
             if not pending:
                 continue
-            task = asyncio.create_task(self._infer_and_resolve(shape, pending))
+            task = asyncio.create_task(self._infer_and_resolve(selected, pending))
             self._inflight.add(task)
 
     async def _infer_and_resolve(

@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import Iterable
 from pathlib import Path
 from types import TracebackType
-from typing import Any, Self, cast
+from typing import Any, TypeVar, cast
 
 import numpy as np
 from omegaconf import DictConfig
@@ -29,6 +29,8 @@ from .det_pipeline import DetPipeline
 from .rec_pipeline import RecPipeline
 from .typing import HWCImage
 
+_OCR = TypeVar("_OCR", bound="RapidOCRv2")
+
 
 class RapidOCRv2:
     """Async coordinator; Det and Rec are independent pipelines."""
@@ -50,7 +52,7 @@ class RapidOCRv2:
         det_concurrency: int = 1,
         rec_batch_size: int = 16,
         cls_batch_size: int = 16,
-        max_wait_ms: float = 3,
+        max_wait: float = 0.003,
         warmup: bool = True,
     ) -> None:
         self._cfg = self._load_config(config_path, params)
@@ -62,7 +64,7 @@ class RapidOCRv2:
                 self._cfg.Det,
                 det_buckets,
                 det_batch_size,
-                max_wait_ms,
+                max_wait,
                 det_concurrency,
             )
         self._rec_pipeline: RecPipeline | None = None
@@ -71,12 +73,12 @@ class RapidOCRv2:
                 self._cfg.Rec,
                 rec_widths,
                 rec_batch_size,
-                max_wait_ms,
+                max_wait,
                 return_word_box=self._cfg.Global.return_word_box,
             )
         self._cls_pipeline: ClsPipeline | None = None
         if self._cfg.Global.use_cls:
-            self._cls_pipeline = ClsPipeline(self._cfg.Cls, cls_batch_size, max_wait_ms)
+            self._cls_pipeline = ClsPipeline(self._cfg.Cls, cls_batch_size, max_wait)
         self._warmup: bool = warmup
         self._start_task: asyncio.Task[None] | None = None
         self._closed: bool = False
@@ -100,7 +102,7 @@ class RapidOCRv2:
         cfg.Rec.font_path = cfg.Global.font_path
         return cfg
 
-    async def start(self) -> Self:
+    async def start(self: _OCR) -> _OCR:
         if self._closed:
             raise RuntimeError("OCR is closed")
         if self._start_task is None:
@@ -261,7 +263,7 @@ class RapidOCRv2:
         if self._rec_pipeline is not None:
             await self._rec_pipeline.close()
 
-    async def __aenter__(self) -> Self:
+    async def __aenter__(self: _OCR) -> _OCR:
         return await self.start()
 
     async def __aexit__(
