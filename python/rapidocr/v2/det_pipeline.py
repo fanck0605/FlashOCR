@@ -54,7 +54,9 @@ class DetPipeline:
         )
         self._batch_size = batch_size
         self._max_wait = max_wait_ms / 1000
-        self._queues: dict[DetShape, deque[DetQueueItem]] = {}
+        self._queues: dict[DetShape, deque[DetQueueItem]] = {
+            bucket: deque() for bucket in self._buckets
+        }
         self._wakeup = asyncio.Event()
         self._executor = ThreadPoolExecutor(max_workers=1)
         self._worker: asyncio.Task[None] | None = None
@@ -151,9 +153,7 @@ class DetPipeline:
         plan = self._plan(img)
         loop = asyncio.get_running_loop()
         future: asyncio.Future[DetResult] = loop.create_future()
-        self._queues.setdefault(plan.bucket, deque()).append(
-            (loop.time(), (img, plan), future)
-        )
+        self._queues[plan.bucket].append((loop.time(), (img, plan), future))
         self._wakeup.set()
         return await future
 
