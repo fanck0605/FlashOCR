@@ -14,9 +14,14 @@ from omegaconf import DictConfig
 from ..ch_ppocr_cls.main import CLS_SHAPE_BY_OCR_VERSION
 from ..ch_ppocr_cls.utils import ClsPostProcess, TextClsOutput
 from ..inference_engine.base import InferSession, get_engine
+from .typings import HWCImage
 
-ClsResult = tuple[np.ndarray, tuple[str, float]]
-ClsQueueItem = tuple[float, np.ndarray, "asyncio.Future[ClsResult]"]
+ClsResult = tuple[HWCImage, tuple[str, float]]
+ClsQueueItem = tuple[
+    float,
+    HWCImage,
+    "asyncio.Future[ClsResult]",
+]
 
 
 class ClsPipeline:
@@ -54,7 +59,7 @@ class ClsPipeline:
             )
         self._worker = loop.create_task(self._run_batches())
 
-    async def classify(self, images: list[np.ndarray]) -> TextClsOutput:
+    async def classify(self, images: list[HWCImage]) -> TextClsOutput:
         if self._closed:
             raise RuntimeError("CLS pipeline is closed")
         if not images:
@@ -109,7 +114,9 @@ class ClsPipeline:
                 if not future.done():
                     future.set_result(result)
 
-    def _prepare(self, image: np.ndarray) -> np.ndarray:
+    def _prepare(
+        self, image: HWCImage
+    ) -> np.ndarray[tuple[int, int, int], np.dtype[np.float32]]:
         channels, height, width = self._shape
         resized_width = min(width, math.ceil(height * image.shape[1] / image.shape[0]))
         resized = cv2.resize(image, (resized_width, height)).astype(np.float32)
@@ -118,7 +125,7 @@ class ClsPipeline:
         padded[:, :, :resized_width] = normalized
         return padded
 
-    async def _infer(self, images: list[np.ndarray]) -> list[ClsResult]:
+    async def _infer(self, images: list[HWCImage]) -> list[ClsResult]:
         assert self._session is not None
         tensor = np.zeros((self._batch_size, *self._shape), np.float32)
         for i, image in enumerate(images):
@@ -131,7 +138,10 @@ class ClsPipeline:
         results: list[ClsResult] = []
         for image, (label, score) in zip(images, labels):
             rotated = (
-                cv2.rotate(image, cv2.ROTATE_180)
+                cast(
+                    HWCImage,
+                    cv2.rotate(image, cv2.ROTATE_180),
+                )
                 if "180" in label and score > self._threshold
                 else image
             )

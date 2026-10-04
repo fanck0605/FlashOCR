@@ -13,12 +13,17 @@ from omegaconf import DictConfig
 from ..ch_ppocr_det.utils import DBPostProcess, DetPreProcess, TextDetOutput
 from ..inference_engine.base import InferSession, get_engine
 from ..utils.process_img import get_rotate_crop_image
+from .typings import HWCImage
 
 DetShape = tuple[int, int]
 
 
-DetResult = tuple[TextDetOutput, list[np.ndarray]]
-DetQueueItem = tuple[float, np.ndarray, "asyncio.Future[DetResult]"]
+DetResult = tuple[TextDetOutput, list[HWCImage]]
+DetQueueItem = tuple[
+    float,
+    HWCImage,
+    "asyncio.Future[DetResult]",
+]
 
 
 class DetPipeline:
@@ -131,7 +136,12 @@ class DetPipeline:
     async def _infer_and_resolve(
         self,
         shape: DetShape,
-        pending: list[tuple[np.ndarray, asyncio.Future[DetResult]]],
+        pending: list[
+            tuple[
+                HWCImage,
+                asyncio.Future[DetResult],
+            ]
+        ],
     ) -> None:
         try:
             results = await self._infer(shape, [item for item, _ in pending])
@@ -143,7 +153,7 @@ class DetPipeline:
                 if not future.done():
                     future.set_exception(exc)
 
-    def _select_bucket(self, img: np.ndarray) -> DetShape:
+    def _select_bucket(self, img: HWCImage) -> DetShape:
         h, w = img.shape[:2]
         if h <= 0 or w <= 0:
             raise ValueError("Image dimensions must be positive")
@@ -152,7 +162,7 @@ class DetPipeline:
                 return bucket
         return max(self._buckets, key=lambda b: min(b[0] / h, b[1] / w))
 
-    async def detect(self, img: np.ndarray) -> DetResult:
+    async def detect(self, img: HWCImage) -> DetResult:
         if self._closed:
             raise RuntimeError("Det pipeline is closed")
         bucket = self._select_bucket(img)
@@ -163,7 +173,9 @@ class DetPipeline:
         return await future
 
     async def _infer(
-        self, bucket: DetShape, items: list[np.ndarray]
+        self,
+        bucket: DetShape,
+        items: list[HWCImage],
     ) -> list[DetResult]:
         assert self._session is not None
         bh, bw = bucket

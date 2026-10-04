@@ -27,6 +27,7 @@ from ..utils.vis_res import VisRes
 from .cls_pipeline import ClsPipeline
 from .det_pipeline import DetPipeline
 from .rec_pipeline import RecPipeline
+from .typings import HWCImage
 
 
 class RapidOCRv2:
@@ -115,9 +116,7 @@ class RapidOCRv2:
         if self._cls_pipeline is not None:
             await self._cls_pipeline.start(self._warmup)
 
-    def _prepare(
-        self, image: InputType
-    ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+    def _prepare(self, image: InputType) -> tuple[HWCImage, HWCImage, dict[str, Any]]:
         original = self._load_img(image)
         settings = self._cfg.Global
         if settings.use_preprocess_img:
@@ -168,11 +167,11 @@ class RapidOCRv2:
 
     def _build_output(
         self,
-        original: np.ndarray,
+        original: HWCImage,
         det: TextDetOutput,
         cls: TextClsOutput,
         rec: TextRecOutput,
-        crops: list[np.ndarray],
+        crops: list[HWCImage],
         record: dict[str, Any],
     ) -> RapidOCROutput:
         assert rec.txts is not None
@@ -227,7 +226,10 @@ class RapidOCRv2:
         )
 
     def _build_detection_output(
-        self, original: np.ndarray, det: TextDetOutput, record: dict[str, Any]
+        self,
+        original: HWCImage,
+        det: TextDetOutput,
+        record: dict[str, Any],
     ) -> RapidOCROutput:
         if det.boxes is None or det.scores is None:
             return RapidOCROutput()

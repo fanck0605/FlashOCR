@@ -15,10 +15,15 @@ from ..ch_ppocr_rec.typings import WordInfo
 from ..utils.model_resolver import normalize_lang
 from ..utils.typings import LangRec
 from ..utils.utils import reorder_bidi_for_display
+from .typings import HWCImage
 
 RecLine = tuple[str, float]
 RecResult = tuple[RecLine, WordInfo | None]
-RecQueueItem = tuple[float, np.ndarray, "asyncio.Future[RecResult]"]
+RecQueueItem = tuple[
+    float,
+    HWCImage,
+    "asyncio.Future[RecResult]",
+]
 
 
 class RecPipeline:
@@ -101,7 +106,7 @@ class RecPipeline:
                     if not future.done():
                         future.set_exception(exc)
 
-    async def recognize(self, images: list[np.ndarray]) -> TextRecOutput:
+    async def recognize(self, images: list[HWCImage]) -> TextRecOutput:
         assert self._model is not None
         height = self._model.rec_image_shape[1]
         futures: list[asyncio.Future[RecResult]] = []
@@ -130,7 +135,11 @@ class RecPipeline:
             elapse=0.0,
         )
 
-    def _infer(self, width: int, images: list[np.ndarray]) -> list[RecResult]:
+    def _infer(
+        self,
+        width: int,
+        images: list[HWCImage],
+    ) -> list[RecResult]:
         assert self._model is not None
         c, h, _ = self._model.rec_image_shape
         tensor = np.zeros((self._batch_size, c, h, width), np.float32)
