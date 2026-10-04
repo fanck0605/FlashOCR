@@ -36,6 +36,7 @@ class DetPipeline:
         buckets: Iterable[DetShape],
         batch_size: int = 4,
         max_wait_ms: float = 3,
+        concurrency: int = 1,
     ) -> None:
         self._cfg = cfg
         self._preprocess = DetPreProcess(
@@ -54,14 +55,18 @@ class DetPipeline:
         )
         self._batch_size = batch_size
         self._max_wait = max_wait_ms / 1000
+        if concurrency < 1:
+            raise ValueError("Detection concurrency must be positive")
+        self._concurrency = concurrency
         self._queues: dict[DetShape, deque[DetQueueItem]] = {
             bucket: deque() for bucket in self._buckets
         }
         self._wakeup = asyncio.Event()
-        self._executor = ThreadPoolExecutor(max_workers=1)
+        self._executor = ThreadPoolExecutor(max_workers=concurrency)
         self._worker: asyncio.Task[None] | None = None
         self._closed = False
         self._session: InferSession | None = None
+        self._inflight: set[asyncio.Task[None]] = set()
 
     async def start(self, warmup: bool = True) -> None:
         loop = asyncio.get_running_loop()
@@ -84,6 +89,16 @@ class DetPipeline:
     async def _run_batches(self) -> None:
         loop = asyncio.get_running_loop()
         while True:
+            self._inflight = {task for task in self._inflight if not task.done()}
+            if len(self._inflight) >= self._concurrency:
+                if self._closed:
+                    await asyncio.gather(*self._inflight, return_exceptions=True)
+                    return
+                done, _ = await asyncio.wait(
+                    self._inflight, return_when=asyncio.FIRST_COMPLETED
+                )
+                self._inflight.difference_update(done)
+                continue
             self._wakeup.clear()
             active = [(shape, queue) for shape, queue in self._queues.items() if queue]
             if not active:
@@ -113,15 +128,21 @@ class DetPipeline:
             ]
             if not pending:
                 continue
-            try:
-                results = await self._infer(shape, [item for item, _ in pending])
-                for (_, future), result in zip(pending, results):
-                    if not future.done():
-                        future.set_result(result)
-            except Exception as exc:
-                for _, future in pending:
-                    if not future.done():
-                        future.set_exception(exc)
+            task = asyncio.create_task(self._infer_and_resolve(shape, pending))
+            self._inflight.add(task)
+
+    async def _infer_and_resolve(
+        self, shape: DetShape, pending: list[tuple[DetInput, asyncio.Future[DetResult]]]
+    ) -> None:
+        try:
+            results = await self._infer(shape, [item for item, _ in pending])
+            for (_, future), result in zip(pending, results):
+                if not future.done():
+                    future.set_result(result)
+        except Exception as exc:  # noqa: BLE001
+            for _, future in pending:
+                if not future.done():
+                    future.set_exception(exc)
 
     def _plan(self, img: np.ndarray) -> DetPlan:
         h, w = img.shape[:2]
@@ -202,4 +223,6 @@ class DetPipeline:
         self._wakeup.set()
         if self._worker is not None:
             await self._worker
+        if self._inflight:
+            await asyncio.gather(*self._inflight, return_exceptions=True)
         self._executor.shutdown(wait=True)

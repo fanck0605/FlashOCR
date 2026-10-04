@@ -46,6 +46,7 @@ class RapidOCRv2:
         ),
         rec_widths: Iterable[int] = (320, 640, 960, 1280, 1920),
         det_batch_size: int = 4,
+        det_concurrency: int = 1,
         rec_batch_size: int = 16,
         cls_batch_size: int = 16,
         max_wait_ms: float = 3,
@@ -57,7 +58,11 @@ class RapidOCRv2:
         self._det_pipeline: DetPipeline | None = None
         if self._cfg.Global.use_det:
             self._det_pipeline = DetPipeline(
-                self._cfg.Det, det_buckets, det_batch_size, max_wait_ms
+                self._cfg.Det,
+                det_buckets,
+                det_batch_size,
+                max_wait_ms,
+                det_concurrency,
             )
         self._rec_pipeline: RecPipeline | None = None
         if self._cfg.Global.use_rec:
