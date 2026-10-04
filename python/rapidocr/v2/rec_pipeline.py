@@ -71,7 +71,7 @@ class RecPipeline:
         self._executor = ThreadPoolExecutor(max_workers=concurrency)
         self._worker: asyncio.Task[None] | None = None
         self._closed = False
-        self._shape: tuple[int, int, int] = tuple(cfg.rec_img_shape)
+        self._img_shape: tuple[int, int, int] = tuple(cfg.rec_img_shape)
         self._postprocess: CTCLabelDecode | None = None
 
     async def start(self, warmup: bool = True) -> None:
@@ -79,7 +79,7 @@ class RecPipeline:
         character, path = self._load_characters()
         self._postprocess = CTCLabelDecode(character=character, character_path=path)
         if warmup:
-            c, h, _ = self._shape
+            c, h, _ = self._img_shape
             for w in self._widths:
                 await loop.run_in_executor(
                     self._executor,
@@ -172,7 +172,7 @@ class RecPipeline:
 
     async def recognize(self, images: list[HWCImage]) -> TextRecOutput:
         assert self._session is not None
-        height = self._shape[1]
+        height = self._img_shape[1]
         futures: list[asyncio.Future[RecResult]] = []
         for image in images:
             width = math.ceil(height * image.shape[1] / image.shape[0])
@@ -203,7 +203,7 @@ class RecPipeline:
         images: list[HWCImage],
     ) -> list[RecResult]:
         assert self._session is not None and self._postprocess is not None
-        c, h, _ = self._shape
+        c, h, _ = self._img_shape
         tensor = np.zeros((self._batch_size, c, h, width), np.float32)
         ratios = [img.shape[1] / img.shape[0] for img in images]
         max_ratio = width / h
