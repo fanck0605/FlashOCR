@@ -11,7 +11,7 @@ from typing import Any
 import numpy as np
 from omegaconf import DictConfig
 
-from ..ch_ppocr_cls import TextClassifier, TextClsOutput
+from ..ch_ppocr_cls import TextClsOutput
 from ..ch_ppocr_det import TextDetOutput
 from ..ch_ppocr_rec import TextRecOutput
 from ..cal_rec_boxes import CalRecBoxes
@@ -27,7 +27,9 @@ from ..utils.process_img import (
 )
 from ..utils.vis_res import VisRes
 from .det_pipeline import DetPipeline
+from .cls_pipeline import ClsPipeline
 from .rec_pipeline import RecPipeline
+
 
 class RapidOCRv2:
     """Async coordinator; Det and Rec are independent pipelines."""
@@ -47,6 +49,7 @@ class RapidOCRv2:
         rec_widths: Iterable[int] = (320, 640, 960, 1280, 1920),
         det_batch_size: int = 4,
         rec_batch_size: int = 16,
+        cls_batch_size: int = 16,
         max_wait_ms: float = 3,
         warmup: bool = True,
     ) -> None:
@@ -66,12 +69,13 @@ class RapidOCRv2:
             return_word_box=self._cfg.Global.return_word_box,
         )
         self._cpu_executor = ThreadPoolExecutor(max_workers=2)
-        self._cls_executor = ThreadPoolExecutor(max_workers=1)
+        self._cls_pipeline: ClsPipeline | None = None
+        if self._cfg.Global.use_cls:
+            self._cls_pipeline = ClsPipeline(self._cfg.Cls, cls_batch_size, max_wait_ms)
         self._warmup: bool = warmup
         self._start_task: asyncio.Task[None] | None = None
         self._closed: bool = False
         self._requests: set[asyncio.Task[RapidOCROutput]] = set()
-        self._cls: TextClassifier | None = None
 
     @staticmethod
     def _load_config(
@@ -102,11 +106,8 @@ class RapidOCRv2:
     async def _start(self) -> None:
         await self._det_pipeline.start(self._warmup)
         await self._rec_pipeline.start(self._warmup)
-        self._cls = None
-        if self._cfg.Global.use_cls:
-            self._cls = await asyncio.get_running_loop().run_in_executor(
-                self._cls_executor, TextClassifier, self._cfg.Cls
-            )
+        if self._cls_pipeline is not None:
+            await self._cls_pipeline.start(self._warmup)
 
     def _prepare(
         self, image: InputType
@@ -150,8 +151,8 @@ class RapidOCRv2:
             return RapidOCROutput()
         cls = TextClsOutput()
         rec_images = crops
-        if self._cls is not None:
-            cls = await loop.run_in_executor(self._cls_executor, self._cls, crops)
+        if self._cls_pipeline is not None:
+            cls = await self._cls_pipeline.classify(crops)
             rec_images = cls.img_list
             assert rec_images is not None
         rec = await self._rec_pipeline.recognize(rec_images)
@@ -214,9 +215,10 @@ class RapidOCRv2:
         if self._requests:
             await asyncio.gather(*tuple(self._requests), return_exceptions=True)
         await self._det_pipeline.close()
+        if self._cls_pipeline is not None:
+            await self._cls_pipeline.close()
         await self._rec_pipeline.close()
         self._cpu_executor.shutdown(wait=True)
-        self._cls_executor.shutdown(wait=True)
 
     async def __aenter__(self) -> RapidOCRv2:
         return await self.start()
