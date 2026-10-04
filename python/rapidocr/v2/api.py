@@ -51,7 +51,9 @@ class RapidOCRv2:
         det_batch_size: int = 4,
         det_concurrency: int = 1,
         rec_batch_size: int = 16,
+        rec_concurrency: int = 1,
         cls_batch_size: int = 16,
+        cls_concurrency: int = 1,
         max_wait: float = 0.003,
         warmup: bool = True,
     ) -> None:
@@ -75,10 +77,13 @@ class RapidOCRv2:
                 rec_batch_size,
                 max_wait,
                 return_word_box=self._cfg.Global.return_word_box,
+                concurrency=rec_concurrency,
             )
         self._cls_pipeline: ClsPipeline | None = None
         if self._cfg.Global.use_cls:
-            self._cls_pipeline = ClsPipeline(self._cfg.Cls, cls_batch_size, max_wait)
+            self._cls_pipeline = ClsPipeline(
+                self._cfg.Cls, cls_batch_size, max_wait, concurrency=cls_concurrency
+            )
         self._warmup: bool = warmup
         self._start_task: asyncio.Task[None] | None = None
         self._closed: bool = False

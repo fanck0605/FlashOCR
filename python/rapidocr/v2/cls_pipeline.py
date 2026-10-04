@@ -28,10 +28,16 @@ class ClsPipeline:
     """Cross-request classification with one fixed input and batch shape."""
 
     def __init__(
-        self, cfg: DictConfig, batch_size: int = 16, max_wait: float = 0.003
+        self,
+        cfg: DictConfig,
+        batch_size: int = 16,
+        max_wait: float = 0.003,
+        concurrency: int = 1,
     ) -> None:
         if batch_size < 1 or max_wait < 0:
             raise ValueError("Invalid CLS batch size or wait time")
+        if concurrency < 1:
+            raise ValueError("Classification concurrency must be positive")
         self._cfg = cfg
         self._shape = tuple(CLS_SHAPE_BY_OCR_VERSION[cfg.ocr_version])
         self._threshold: float = cfg.cls_thresh
@@ -40,7 +46,9 @@ class ClsPipeline:
         self._max_wait = max_wait
         self._queue: deque[ClsQueueItem] = deque()
         self._wakeup = asyncio.Event()
-        self._executor = ThreadPoolExecutor(max_workers=1)
+        self._concurrency = concurrency
+        self._inflight: set[asyncio.Task[None]] = set()
+        self._executor = ThreadPoolExecutor(max_workers=concurrency)
         self._worker: asyncio.Task[None] | None = None
         self._session: InferSession | None = None
         self._closed = False
@@ -81,38 +89,48 @@ class ClsPipeline:
     async def _run_batches(self) -> None:
         loop = asyncio.get_running_loop()
         while True:
+            self._inflight = {task for task in self._inflight if not task.done()}
+            if len(self._inflight) >= self._concurrency:
+                done, _ = await asyncio.wait(
+                    self._inflight, return_when=asyncio.FIRST_COMPLETED
+                )
+                self._inflight.difference_update(done)
+                continue
             self._wakeup.clear()
             if not self._queue:
                 if self._closed:
                     return
                 await self._wakeup.wait()
                 continue
-            if self._closed:
-                self._max_wait = 0
             delay = max(0.0, self._queue[0][0] + self._max_wait - loop.time())
             if not self._closed and len(self._queue) < self._batch_size and delay > 0:
-                await asyncio.sleep(delay)
+                try:
+                    await asyncio.wait_for(self._wakeup.wait(), delay)
+                except asyncio.TimeoutError:
+                    pass
                 continue
-            batch = [
-                self._queue.popleft()
-                for _ in range(min(len(self._queue), self._batch_size))
-            ]
-            pending = [
-                (image, future) for _, image, future in batch if not future.cancelled()
-            ]
+            pending: list[tuple[HWCImage, asyncio.Future[ClsResult]]] = []
+            for _ in range(min(len(self._queue), self._batch_size)):
+                _, image, future = self._queue.popleft()
+                if not future.cancelled():
+                    pending.append((image, future))
             if not pending:
                 continue
-            try:
-                results = await self._infer([image for image, _ in pending])
-            except Exception as exc:  # noqa: BLE001
-                # Propagate backend failures to every request in this batch.
-                for _, future in pending:
-                    if not future.done():
-                        future.set_exception(exc)
-                continue
+            task = asyncio.create_task(self._infer_and_resolve(pending))
+            self._inflight.add(task)
+
+    async def _infer_and_resolve(
+        self, pending: list[tuple[HWCImage, asyncio.Future[ClsResult]]]
+    ) -> None:
+        try:
+            results = await self._infer([image for image, _ in pending])
             for (_, future), result in zip(pending, results):
                 if not future.done():
                     future.set_result(result)
+        except Exception as exc:  # noqa: BLE001
+            for _, future in pending:
+                if not future.done():
+                    future.set_exception(exc)
 
     def _prepare(
         self, image: HWCImage
@@ -154,4 +172,6 @@ class ClsPipeline:
         self._wakeup.set()
         if self._worker is not None:
             await self._worker
+        if self._inflight:
+            await asyncio.gather(*self._inflight, return_exceptions=True)
         self._executor.shutdown(wait=True)

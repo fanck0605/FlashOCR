@@ -19,11 +19,7 @@ from .typing import HWCImage
 
 RecLine = tuple[str, float]
 RecResult = tuple[RecLine, WordInfo | None]
-RecQueueItem = tuple[
-    float,
-    HWCImage,
-    "asyncio.Future[RecResult]",
-]
+RecQueueItem = tuple[float, HWCImage, "asyncio.Future[RecResult]"]
 
 
 class RecPipeline:
@@ -34,15 +30,22 @@ class RecPipeline:
         batch_size: int = 16,
         max_wait: float = 0.003,
         return_word_box: bool = False,
+        concurrency: int = 1,
     ) -> None:
+        if concurrency < 1:
+            raise ValueError("Recognition concurrency must be positive")
         self._cfg = cfg
         self._return_word_box = return_word_box
         self._widths = tuple(sorted(set(widths)))
         self._batch_size = batch_size
         self._max_wait = max_wait
-        self._queues: dict[int, deque[RecQueueItem]] = {}
+        self._queues: dict[int, deque[RecQueueItem]] = {
+            width: deque() for width in self._widths
+        }
         self._wakeup = asyncio.Event()
-        self._executor = ThreadPoolExecutor(max_workers=1)
+        self._concurrency = concurrency
+        self._inflight: set[asyncio.Task[None]] = set()
+        self._executor = ThreadPoolExecutor(max_workers=concurrency)
         self._worker: asyncio.Task[None] | None = None
         self._closed = False
         self._model: TextRecognizer | None = None
@@ -65,46 +68,64 @@ class RecPipeline:
     async def _run_batches(self) -> None:
         loop = asyncio.get_running_loop()
         while True:
-            self._wakeup.clear()
-            active = [(width, queue) for width, queue in self._queues.items() if queue]
-            if not active:
-                if self._closed:
-                    return
-                await self._wakeup.wait()
+            self._inflight = {task for task in self._inflight if not task.done()}
+            if len(self._inflight) >= self._concurrency:
+                done, _ = await asyncio.wait(
+                    self._inflight, return_when=asyncio.FIRST_COMPLETED
+                )
+                self._inflight.difference_update(done)
                 continue
+            self._wakeup.clear()
             now = loop.time()
-            ready = [
-                (width, queue)
-                for width, queue in active
-                if self._closed
-                or len(queue) >= self._batch_size
-                or now - queue[0][0] >= self._max_wait
-            ]
-            if not ready:
-                delay = min(queue[0][0] + self._max_wait - now for _, queue in active)
+            selected: int | None = None
+            oldest = float("inf")
+            deadline = float("inf")
+            for width, queue in self._queues.items():
+                if not queue:
+                    continue
+                arrived = queue[0][0]
+                expires = arrived + self._max_wait
+                deadline = min(deadline, expires)
+                if (
+                    self._closed or len(queue) >= self._batch_size or expires <= now
+                ) and arrived < oldest:
+                    selected, oldest = width, arrived
+            if selected is None:
+                if deadline == float("inf"):
+                    if self._closed:
+                        return
+                    await self._wakeup.wait()
+                    continue
                 try:
-                    await asyncio.wait_for(self._wakeup.wait(), delay)
+                    await asyncio.wait_for(self._wakeup.wait(), deadline - now)
                 except asyncio.TimeoutError:
                     pass
                 continue
-            width, queue = min(ready, key=lambda entry: entry[1][0][0])
-            batch = [queue.popleft() for _ in range(min(len(queue), self._batch_size))]
-            pending = [
-                (image, future) for _, image, future in batch if not future.cancelled()
-            ]
+            queue = self._queues[selected]
+            pending: list[tuple[HWCImage, asyncio.Future[RecResult]]] = []
+            for _ in range(min(len(queue), self._batch_size)):
+                _, image, future = queue.popleft()
+                if not future.cancelled():
+                    pending.append((image, future))
             if not pending:
                 continue
-            try:
-                results = await loop.run_in_executor(
-                    self._executor, self._infer, width, [image for image, _ in pending]
-                )
-                for (_, future), result in zip(pending, results):
-                    if not future.done():
-                        future.set_result(result)
-            except Exception as exc:
-                for _, future in pending:
-                    if not future.done():
-                        future.set_exception(exc)
+            task = asyncio.create_task(self._infer_and_resolve(selected, pending))
+            self._inflight.add(task)
+
+    async def _infer_and_resolve(
+        self, width: int, pending: list[tuple[HWCImage, asyncio.Future[RecResult]]]
+    ) -> None:
+        try:
+            results = await asyncio.get_running_loop().run_in_executor(
+                self._executor, self._infer, width, [image for image, _ in pending]
+            )
+            for (_, future), result in zip(pending, results):
+                if not future.done():
+                    future.set_result(result)
+        except Exception as exc:  # noqa: BLE001
+            for _, future in pending:
+                if not future.done():
+                    future.set_exception(exc)
 
     async def recognize(self, images: list[HWCImage]) -> TextRecOutput:
         assert self._model is not None
@@ -117,9 +138,7 @@ class RecPipeline:
                 raise RuntimeError("Rec pipeline is closed")
             loop = asyncio.get_running_loop()
             future: asyncio.Future[RecResult] = loop.create_future()
-            self._queues.setdefault(bucket, deque()).append(
-                (loop.time(), image, future)
-            )
+            self._queues[bucket].append((loop.time(), image, future))
             self._wakeup.set()
             futures.append(future)
         results = await asyncio.gather(*futures)
@@ -164,4 +183,6 @@ class RecPipeline:
         self._wakeup.set()
         if self._worker is not None:
             await self._worker
+        if self._inflight:
+            await asyncio.gather(*self._inflight, return_exceptions=True)
         self._executor.shutdown(wait=True)

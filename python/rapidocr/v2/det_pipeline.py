@@ -16,14 +16,8 @@ from ..utils.process_img import get_rotate_crop_image
 from .typing import HWCImage
 
 DetShape = tuple[int, int]
-
-
 DetResult = tuple[TextDetOutput, list[HWCImage]]
-DetQueueItem = tuple[
-    float,
-    HWCImage,
-    "asyncio.Future[DetResult]",
-]
+DetQueueItem = tuple[float, HWCImage, "asyncio.Future[DetResult]"]
 
 
 class DetPipeline:
