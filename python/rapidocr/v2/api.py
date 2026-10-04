@@ -2,32 +2,30 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterable
-from concurrent.futures import ThreadPoolExecutor
-from functools import partial
 from pathlib import Path
 from types import TracebackType
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 from omegaconf import DictConfig
 
+from ..cal_rec_boxes import CalRecBoxes
 from ..ch_ppocr_cls import TextClsOutput
 from ..ch_ppocr_det import TextDetOutput
 from ..ch_ppocr_rec import TextRecOutput
-from ..cal_rec_boxes import CalRecBoxes
 from ..utils.load_image import InputType, LoadImage
 from ..utils.log import logger
-from ..utils.parse_parameters import ParseParams
 from ..utils.output import RapidOCROutput
+from ..utils.parse_parameters import ParseParams
 from ..utils.process_img import (
     apply_vertical_padding,
-    resize_image_within_bounds,
     map_boxes_to_original,
     map_img_to_original,
+    resize_image_within_bounds,
 )
 from ..utils.vis_res import VisRes
-from .det_pipeline import DetPipeline
 from .cls_pipeline import ClsPipeline
+from .det_pipeline import DetPipeline
 from .rec_pipeline import RecPipeline
 
 
@@ -56,19 +54,20 @@ class RapidOCRv2:
         self._cfg = self._load_config(config_path, params)
         self._load_img = LoadImage()
         self._cal_rec_boxes = CalRecBoxes()
-        if not self._cfg.Global.use_det or not self._cfg.Global.use_rec:
-            raise ValueError("v2 requires Det and Rec enabled")
-        self._det_pipeline = DetPipeline(
-            self._cfg.Det, det_buckets, det_batch_size, max_wait_ms
-        )
-        self._rec_pipeline = RecPipeline(
-            self._cfg.Rec,
-            rec_widths,
-            rec_batch_size,
-            max_wait_ms,
-            return_word_box=self._cfg.Global.return_word_box,
-        )
-        self._cpu_executor = ThreadPoolExecutor(max_workers=2)
+        self._det_pipeline: DetPipeline | None = None
+        if self._cfg.Global.use_det:
+            self._det_pipeline = DetPipeline(
+                self._cfg.Det, det_buckets, det_batch_size, max_wait_ms
+            )
+        self._rec_pipeline: RecPipeline | None = None
+        if self._cfg.Global.use_rec:
+            self._rec_pipeline = RecPipeline(
+                self._cfg.Rec,
+                rec_widths,
+                rec_batch_size,
+                max_wait_ms,
+                return_word_box=self._cfg.Global.return_word_box,
+            )
         self._cls_pipeline: ClsPipeline | None = None
         if self._cfg.Global.use_cls:
             self._cls_pipeline = ClsPipeline(self._cfg.Cls, cls_batch_size, max_wait_ms)
@@ -104,8 +103,10 @@ class RapidOCRv2:
         return self
 
     async def _start(self) -> None:
-        await self._det_pipeline.start(self._warmup)
-        await self._rec_pipeline.start(self._warmup)
+        if self._det_pipeline is not None:
+            await self._det_pipeline.start(self._warmup)
+        if self._rec_pipeline is not None:
+            await self._rec_pipeline.start(self._warmup)
         if self._cls_pipeline is not None:
             await self._cls_pipeline.start(self._warmup)
 
@@ -121,7 +122,7 @@ class RapidOCRv2:
         else:
             img, ratio_h, ratio_w = original, 1.0, 1.0
         record = {"preprocess": {"ratio_h": ratio_h, "ratio_w": ratio_w}}
-        if settings.use_vertical_padding:
+        if self._det_pipeline is not None and settings.use_vertical_padding:
             img, record = apply_vertical_padding(
                 img, record, settings.width_height_ratio, settings.min_height
             )
@@ -142,11 +143,11 @@ class RapidOCRv2:
         return list(await asyncio.gather(*(self(image) for image in images)))
 
     async def _request(self, image: InputType) -> RapidOCROutput:
-        loop = asyncio.get_running_loop()
-        original, prepared, record = await loop.run_in_executor(
-            self._cpu_executor, self._prepare, image
-        )
-        det, crops = await self._det_pipeline.submit(prepared)
+        original, prepared, record = self._prepare(image)
+        det = TextDetOutput(img=prepared)
+        crops = [prepared]
+        if self._det_pipeline is not None:
+            det, crops = await self._det_pipeline.detect(prepared)
         if not crops:
             return RapidOCROutput()
         cls = TextClsOutput()
@@ -155,11 +156,10 @@ class RapidOCRv2:
             cls = await self._cls_pipeline.classify(crops)
             rec_images = cls.img_list
             assert rec_images is not None
+        if self._rec_pipeline is None:
+            return self._build_detection_output(original, det, record)
         rec = await self._rec_pipeline.recognize(rec_images)
-        return await loop.run_in_executor(
-            self._cpu_executor,
-            partial(self._build_output, original, det, cls, rec, crops, record),
-        )
+        return self._build_output(original, det, cls, rec, crops, record)
 
     def _build_output(
         self,
@@ -170,13 +170,17 @@ class RapidOCRv2:
         crops: list[np.ndarray],
         record: dict[str, Any],
     ) -> RapidOCROutput:
-        assert det.boxes is not None and rec.txts is not None
-        boxes = map_boxes_to_original(
-            det.boxes.astype(np.float32), record, *original.shape[:2]
-        )
-        words = rec.word_results
-        if self._cfg.Global.return_word_box and all(words):
-            metadata = record["preprocess"]
+        assert rec.txts is not None
+        boxes = None
+        if det.boxes is not None:
+            boxes = map_boxes_to_original(
+                det.boxes.astype(np.float32), record, *original.shape[:2]
+            )
+        # Legacy components annotate variable-length results as fixed-size tuples.
+        words: tuple[Any, ...] = rec.word_results
+        if boxes is not None and self._cfg.Global.return_word_box and all(words):
+            metadata = record.get("preprocess")
+            assert metadata is not None
             original_crops = map_img_to_original(
                 crops, metadata["ratio_h"], metadata["ratio_w"]
             )
@@ -184,8 +188,14 @@ class RapidOCRv2:
                 original_crops, boxes, rec, self._cfg.Global.return_single_char_box
             )
             words = tuple(
-                tuple(item for item in line if item[2] is not None)
-                for line in word_output.word_results
+                tuple(
+                    (item[0], item[1], item[2])
+                    for item in line
+                    if isinstance(item, tuple)
+                    and len(item) == 3
+                    and item[2] is not None
+                )
+                for line in cast(tuple[tuple[Any, ...], ...], word_output.word_results)
             )
         indices = [
             i
@@ -196,11 +206,34 @@ class RapidOCRv2:
             return RapidOCROutput()
         return RapidOCROutput(
             img=original,
-            boxes=boxes[indices],
-            txts=tuple(rec.txts[i] for i in indices),
-            scores=tuple(rec.scores[i] for i in indices),
-            word_results=tuple(words[i] for i in indices),
+            boxes=boxes[indices] if boxes is not None else None,
+            txts=cast(tuple[str], tuple(rec.txts[i] for i in indices)),
+            scores=cast(tuple[float], tuple(rec.scores[i] for i in indices)),
+            word_results=cast(
+                tuple[tuple[str, float, list[list[int]] | None]],
+                tuple(words[i] for i in indices),
+            ),
             elapse_list=[det.elapse, cls.elapse, rec.elapse],
+            viser=VisRes(
+                text_score=self._cfg.Global.text_score,
+                lang_type=self._cfg.Rec.lang_type,
+                font_path=self._cfg.Global.font_path,
+            ),
+        )
+
+    def _build_detection_output(
+        self, original: np.ndarray, det: TextDetOutput, record: dict[str, Any]
+    ) -> RapidOCROutput:
+        if det.boxes is None or det.scores is None:
+            return RapidOCROutput()
+        boxes = map_boxes_to_original(
+            det.boxes.astype(np.float32), record, *original.shape[:2]
+        )
+        return RapidOCROutput(
+            img=original,
+            boxes=boxes,
+            scores=cast(tuple[float], tuple(det.scores)),
+            elapse_list=[det.elapse],
             viser=VisRes(
                 text_score=self._cfg.Global.text_score,
                 lang_type=self._cfg.Rec.lang_type,
@@ -214,11 +247,12 @@ class RapidOCRv2:
             await self._start_task
         if self._requests:
             await asyncio.gather(*tuple(self._requests), return_exceptions=True)
-        await self._det_pipeline.close()
+        if self._det_pipeline is not None:
+            await self._det_pipeline.close()
         if self._cls_pipeline is not None:
             await self._cls_pipeline.close()
-        await self._rec_pipeline.close()
-        self._cpu_executor.shutdown(wait=True)
+        if self._rec_pipeline is not None:
+            await self._rec_pipeline.close()
 
     async def __aenter__(self) -> RapidOCRv2:
         return await self.start()

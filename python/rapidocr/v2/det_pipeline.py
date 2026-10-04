@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from typing import cast
 
 import cv2
 import numpy as np
@@ -14,7 +16,15 @@ from ..inference_engine.base import InferSession, get_engine
 from ..utils.process_img import get_rotate_crop_image
 
 DetShape = tuple[int, int]
-DetInput = tuple[np.ndarray, np.ndarray]
+
+
+@dataclass(frozen=True)
+class DetPlan:
+    bucket: DetShape
+    resized_shape: DetShape
+
+
+DetInput = tuple[np.ndarray, DetPlan]
 DetResult = tuple[TextDetOutput, list[np.ndarray]]
 DetQueueItem = tuple[float, DetInput, "asyncio.Future[DetResult]"]
 
@@ -64,7 +74,10 @@ class DetPipeline:
         self._worker = loop.create_task(self._run_batches())
 
     def _load_session(self) -> InferSession:
-        return get_engine(self._cfg.engine_type)(self._cfg)
+        factory = cast(
+            Callable[[DictConfig], InferSession], get_engine(self._cfg.engine_type)
+        )
+        return factory(self._cfg)
 
     async def _run_batches(self) -> None:
         loop = asyncio.get_running_loop()
@@ -108,11 +121,19 @@ class DetPipeline:
                     if not future.done():
                         future.set_exception(exc)
 
-    def _prepare(self, img: np.ndarray) -> tuple[DetShape, np.ndarray]:
-        resized = self._preprocess.resize(img)
-        if resized is None:
+    def _plan(self, img: np.ndarray) -> DetPlan:
+        h, w = img.shape[:2]
+        if h <= 0 or w <= 0:
+            raise ValueError("Image dimensions must be positive")
+        limit = self._preprocess.limit_side_len
+        if self._preprocess.limit_type == "max":
+            ratio = min(1.0, limit / max(h, w))
+        else:
+            ratio = max(1.0, limit / min(h, w))
+        h = int(round(int(h * ratio) / 32) * 32)
+        w = int(round(int(w * ratio) / 32) * 32)
+        if h <= 0 or w <= 0:
             raise ValueError("Cannot resize image")
-        h, w = resized.shape[:2]
         fits = [b for b in self._buckets if b[0] >= h and b[1] >= w]
         bucket = (
             fits[0]
@@ -121,19 +142,17 @@ class DetPipeline:
         )
         scale = min(1.0, bucket[0] / h, bucket[1] / w)
         if scale < 1:
-            resized = cv2.resize(
-                resized, (max(1, int(w * scale)), max(1, int(h * scale)))
-            )
-        return bucket, resized
+            h, w = max(1, int(h * scale)), max(1, int(w * scale))
+        return DetPlan(bucket=(bucket[0], bucket[1]), resized_shape=(h, w))
 
-    async def submit(self, img: np.ndarray) -> DetResult:
+    async def detect(self, img: np.ndarray) -> DetResult:
         if self._closed:
             raise RuntimeError("Det pipeline is closed")
-        bucket, resized = self._prepare(img)
+        plan = self._plan(img)
         loop = asyncio.get_running_loop()
         future: asyncio.Future[DetResult] = loop.create_future()
-        self._queues.setdefault(bucket, deque()).append(
-            (loop.time(), (img, resized), future)
+        self._queues.setdefault(plan.bucket, deque()).append(
+            (loop.time(), (img, plan), future)
         )
         self._wakeup.set()
         return await future
@@ -143,25 +162,27 @@ class DetPipeline:
         bh, bw = bucket
         pre = self._preprocess
         tensor = np.zeros((self._batch_size, 3, bh, bw), np.float32)
-        for i, (_, resized) in enumerate(items):
-            h, w = resized.shape[:2]
+        for i, (img, plan) in enumerate(items):
+            h, w = plan.resized_shape
+            resized = cv2.resize(img, (w, h))
             tensor[i, :, :h, :w] = pre.permute(pre.normalize(resized))
+            del resized
             await asyncio.sleep(0)
         preds = await asyncio.get_running_loop().run_in_executor(
             self._executor, self._session, tensor
         )
         outputs: list[DetResult] = []
-        for i, (img, resized) in enumerate(items):
-            h, w = resized.shape[:2]
+        for i, (img, plan) in enumerate(items):
+            h, w = plan.resized_shape
             ph, pw = preds.shape[-2:]
             valid = preds[
                 i : i + 1, :, : max(1, round(h * ph / bh)), : max(1, round(w * pw / bw))
             ]
-            boxes, scores = self._postprocess(valid, resized.shape[:2])
+            boxes, scores = self._postprocess(valid, plan.resized_shape)
             if len(boxes):
                 boxes = boxes.astype(np.float32)
-                boxes[:, :, 0] *= img.shape[1] / resized.shape[1]
-                boxes[:, :, 1] *= img.shape[0] / resized.shape[0]
+                boxes[:, :, 0] *= img.shape[1] / w
+                boxes[:, :, 1] *= img.shape[0] / h
                 order = np.lexsort((boxes[:, 0, 0], boxes[:, 0, 1]))
                 boxes = boxes[order]
                 scores = [scores[j] for j in order]

@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 import math
 from collections import deque
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
+from typing import cast
 
 import numpy as np
 from omegaconf import DictConfig
@@ -43,9 +44,9 @@ class RecPipeline:
 
     async def start(self, warmup: bool = True) -> None:
         loop = asyncio.get_running_loop()
-        self._model = await loop.run_in_executor(
-            self._executor, TextRecognizer, self._cfg
-        )
+        factory = cast(Callable[[DictConfig], TextRecognizer], TextRecognizer)
+        self._model = await loop.run_in_executor(self._executor, factory, self._cfg)
+        assert self._model is not None
         if warmup:
             c, h, _ = self._model.rec_image_shape
             for w in self._widths:
@@ -121,7 +122,13 @@ class RecPipeline:
         texts, scores = zip(*lines)
         if normalize_lang(self._cfg.lang_type) == LangRec.ARABIC.value:
             texts = reorder_bidi_for_display(texts)
-        return TextRecOutput(images, texts, scores, words, elapse=0.0)
+        return TextRecOutput(
+            images,
+            cast(tuple[str], tuple(str(text) for text in texts)),
+            list(scores),
+            tuple(words),
+            elapse=0.0,
+        )
 
     def _infer(self, width: int, images: list[np.ndarray]) -> list[RecResult]:
         assert self._model is not None

@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import math
 from collections import deque
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from typing import cast
 
 import cv2
 import numpy as np
@@ -39,7 +41,10 @@ class ClsPipeline:
         self._closed = False
 
     async def start(self, warmup: bool = True) -> None:
-        self._session = get_engine(self._cfg.engine_type)(self._cfg)
+        factory = cast(
+            Callable[[DictConfig], InferSession], get_engine(self._cfg.engine_type)
+        )
+        self._session = factory(self._cfg)
         loop = asyncio.get_running_loop()
         if warmup:
             await loop.run_in_executor(
