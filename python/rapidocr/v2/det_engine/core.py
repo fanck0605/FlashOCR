@@ -5,19 +5,19 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from itertools import islice
 from math import isqrt
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Literal
 
 import cv2
 import numpy as np
 
 from ...ch_ppocr_det.utils import DBPostProcess, DetPreProcess, TextDetOutput
-from ...inference_engine.base import InferSession, get_engine
 from ...utils.process_img import get_rotate_crop_image
+from ..session import create_session
 from ..typing import HWCImage
 
 if TYPE_CHECKING:
     import sys
-    from collections.abc import Callable, Iterable
+    from collections.abc import Iterable
 
     from omegaconf import DictConfig
 
@@ -64,10 +64,7 @@ class DetEngine:
         max_wait: float = 0.02,
         concurrency: int = 1,
     ) -> None:
-        factory = cast(
-            "Callable[[DictConfig], InferSession]", get_engine(cfg.engine_type)
-        )
-        self._session = factory(cfg)
+        self._session = create_session(cfg)
         self._preprocess = DetPreProcess(
             cfg.limit_side_len,
             cfg.limit_type,
@@ -293,3 +290,6 @@ class DetEngine:
         if self._inflight:
             await asyncio.gather(*self._inflight, return_exceptions=True)
         self._executor.shutdown(wait=True)
+        close_session = getattr(self._session, "close", None)
+        if close_session is not None:
+            close_session()

@@ -13,17 +13,18 @@ import numpy as np
 
 from ...ch_ppocr_rec.typings import TextRecOutput, WordInfo
 from ...ch_ppocr_rec.utils import CTCLabelDecode
-from ...inference_engine.base import FileInfo, InferSession, get_engine
+from ...inference_engine.base import FileInfo
 from ...utils.download_file import DownloadFile, DownloadFileInput
 from ...utils.log import logger
 from ...utils.model_resolver import normalize_lang
 from ...utils.typings import LangRec
 from ...utils.utils import reorder_bidi_for_display, validate_rtl_dependency
+from ..session import create_session
 from ..typing import HWCImage
 
 if TYPE_CHECKING:
     import sys
-    from collections.abc import Callable, Iterable
+    from collections.abc import Iterable
 
     from omegaconf import DictConfig
 
@@ -81,10 +82,7 @@ class RecEngine:
         )
         if self._is_arabic:
             validate_rtl_dependency()
-        factory = cast(
-            "Callable[[DictConfig], InferSession]", get_engine(cfg.engine_type)
-        )
-        self._session = factory(cfg)
+        self._session = create_session(cfg)
         self._return_word_box = return_word_box
         self._widths = tuple(sorted(set(buckets)))
         self._batch_size = batch_size
@@ -286,3 +284,6 @@ class RecEngine:
         if self._inflight:
             await asyncio.gather(*self._inflight, return_exceptions=True)
         self._executor.shutdown(wait=True)
+        close_session = getattr(self._session, "close", None)
+        if close_session is not None:
+            close_session()

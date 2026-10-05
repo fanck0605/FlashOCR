@@ -17,7 +17,7 @@ from ...utils.process_img import (
 )
 from ...utils.vis_res import VisRes
 from ..cls_engine import ClsEngine
-from ..det_engine import DetEngine, generate_det_buckets
+from ..det_engine import DetEngine, DetShape, generate_det_buckets
 from ..rec_engine import RecEngine, generate_rec_buckets
 
 if TYPE_CHECKING:
@@ -36,7 +36,7 @@ class OCREngine:
         self,
         cfg: DictConfig,
         *,
-        det_buckets: Iterable[tuple[int, int]] = generate_det_buckets(160, 640, 16),
+        det_buckets: Iterable[DetShape] = generate_det_buckets(160, 640, 16),
         rec_buckets: Iterable[int] = generate_rec_buckets(3840, 8),
         det_batch_size: int = 4,
         det_concurrency: int = 1,

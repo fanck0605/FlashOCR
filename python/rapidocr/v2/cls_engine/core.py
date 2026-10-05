@@ -12,12 +12,11 @@ import numpy as np
 
 from ...ch_ppocr_cls.main import CLS_SHAPE_BY_OCR_VERSION
 from ...ch_ppocr_cls.utils import ClsPostProcess, TextClsOutput
-from ...inference_engine.base import InferSession, get_engine
+from ..session import create_session
 from ..typing import HWCImage
 
 if TYPE_CHECKING:
     import sys
-    from collections.abc import Callable
 
     from omegaconf import DictConfig
 
@@ -50,10 +49,7 @@ class ClsEngine:
             raise ValueError("Classification wait time must be nonnegative")
         if concurrency < 1:
             raise ValueError("Classification concurrency must be positive")
-        factory = cast(
-            "Callable[[DictConfig], InferSession]", get_engine(cfg.engine_type)
-        )
-        self._session = factory(cfg)
+        self._session = create_session(cfg)
         self._shape = tuple(CLS_SHAPE_BY_OCR_VERSION[cfg.ocr_version])
         self._threshold: float = cfg.cls_thresh
         self._postprocess = ClsPostProcess(cfg.label_list)
@@ -211,3 +207,6 @@ class ClsEngine:
         if self._inflight:
             await asyncio.gather(*self._inflight, return_exceptions=True)
         self._executor.shutdown(wait=True)
+        close_session = getattr(self._session, "close", None)
+        if close_session is not None:
+            close_session()

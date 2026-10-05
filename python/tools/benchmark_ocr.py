@@ -10,6 +10,7 @@ import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from importlib import import_module
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -20,6 +21,8 @@ sys.path.insert(0, str(PYTHON_ROOT))
 
 from rapidocr import RapidOCR
 from rapidocr.v2 import FlashOCR
+from rapidocr.v2.rec_engine import generate_rec_buckets
+from rapidocr.v2.session.onnx import OnnxSession
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -105,6 +108,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("image_dir", nargs="?", type=Path, default=DEFAULT_IMAGE_DIR)
     parser.add_argument("--concurrency", type=int, default=8)
+    parser.add_argument("--det-concurrency", type=int, default=1)
+    parser.add_argument("--cls-concurrency", type=int, default=1)
+    parser.add_argument("--rec-concurrency", type=int, default=1)
     parser.add_argument(
         "--max-images", type=int, default=0, help="Zero means all images."
     )
@@ -116,6 +122,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-wait", type=float, default=0.02)
     parser.add_argument("--cls-batch-size", type=int, default=16)
     parser.add_argument("--rec-batch-size", type=int, default=32)
+    parser.add_argument("--rec-max-width", type=int, default=3840)
+    parser.add_argument("--rec-bucket-count", type=int, default=8)
+    parser.add_argument("--disable-cuda-graph", action="store_true")
     parser.add_argument("--engine", choices=("both", "rapid", "flash"), default="both")
     parser.add_argument("--output", type=Path, default=Path("benchmark_ocr.json"))
     parser.add_argument(
@@ -124,12 +133,17 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if (
         args.concurrency < 1
+        or args.det_concurrency < 1
+        or args.cls_concurrency < 1
+        or args.rec_concurrency < 1
         or args.rounds < 1
         or args.max_images < 0
         or args.repeat < 1
         or args.max_wait < 0
         or args.cls_batch_size < 1
         or args.rec_batch_size < 1
+        or args.rec_max_width < 1
+        or args.rec_bucket_count < 1
     ):
         parser.error(
             "Concurrency, rounds, and repeat must be positive; max-images must be nonnegative"
@@ -263,10 +277,20 @@ async def benchmark_flash(
     memory: GPUMemorySampler | None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
+    if args.disable_cuda_graph:
+        from rapidocr.inference_engine.onnxruntime import OrtInferSession
+
+        for stage in ("det", "cls", "rec"):
+            module = import_module(f"rapidocr.v2.{stage}_engine.core")
+            module.__dict__["create_session"] = OrtInferSession
     ocr = FlashOCR(
         params=params,
+        det_concurrency=args.det_concurrency,
+        cls_concurrency=args.cls_concurrency,
+        rec_concurrency=args.rec_concurrency,
         cls_batch_size=args.cls_batch_size,
         rec_batch_size=args.rec_batch_size,
+        rec_buckets=generate_rec_buckets(args.rec_max_width, args.rec_bucket_count),
         max_wait=args.max_wait,
     )
     init = time.perf_counter() - started
@@ -304,14 +328,27 @@ async def benchmark_flash(
             "cls": pipeline._cls_engine.batch_stats(),
             "rec": pipeline._rec_engine.batch_stats(),
         }
+        graph_shapes = {
+            name: engine._session.graph_shapes()
+            for name, engine in (
+                ("det", pipeline._det_engine),
+                ("cls", pipeline._cls_engine),
+                ("rec", pipeline._rec_engine),
+            )
+            if isinstance(engine._session, OnnxSession)
+        }
     finally:
         await ocr.close()
+        if memory is not None:
+            memory.phase("closed")
     return {
         "init_s": init,
         "warmup_s": warmup,
         "providers": providers,
         "rounds": rounds,
         "batch_stats": batch_stats,
+        "graph_shapes": graph_shapes,
+        "cuda_graph": not args.disable_cuda_graph,
     }
 
 
@@ -329,6 +366,11 @@ async def run(args: argparse.Namespace) -> int:
         "image_dir": str(args.image_dir.resolve()),
         "images": len(images),
         "concurrency": args.concurrency,
+        "stage_concurrency": {
+            "det": args.det_concurrency,
+            "cls": args.cls_concurrency,
+            "rec": args.rec_concurrency,
+        },
         "cuda": args.cuda,
         "order": args.order,
         "process_mode": "independent",
@@ -363,6 +405,12 @@ async def run(args: argparse.Namespace) -> int:
                     "rapid" if name == "RapidOCR" else "flash",
                     "--concurrency",
                     str(args.concurrency),
+                    "--det-concurrency",
+                    str(args.det_concurrency),
+                    "--cls-concurrency",
+                    str(args.cls_concurrency),
+                    "--rec-concurrency",
+                    str(args.rec_concurrency),
                     "--rounds",
                     str(args.rounds),
                     "--max-images",
@@ -375,11 +423,17 @@ async def run(args: argparse.Namespace) -> int:
                     str(args.cls_batch_size),
                     "--rec-batch-size",
                     str(args.rec_batch_size),
+                    "--rec-max-width",
+                    str(args.rec_max_width),
+                    "--rec-bucket-count",
+                    str(args.rec_bucket_count),
                     "--output",
                     str(child_output),
                 ]
                 if args.cuda:
                     command.append("--cuda")
+                if args.disable_cuda_graph:
+                    command.append("--disable-cuda-graph")
                 child = await asyncio.create_subprocess_exec(*command)
                 code = await child.wait()
                 if not child_output.exists():
