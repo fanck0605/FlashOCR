@@ -62,7 +62,7 @@ class TestStageBatching(unittest.IsolatedAsyncioTestCase):
         else:
             with patch("rapidocr.v2.rec_pipeline.get_engine", return_value=Mock()):
                 pipeline = RecPipeline(
-                    cfg, widths=[32, 64], batch_size=2, max_wait=10, concurrency=2
+                    cfg, buckets=[32, 64], batch_size=2, max_wait=10, concurrency=2
                 )
         self.assertFalse(hasattr(pipeline, "_cfg"))
         loop = asyncio.get_running_loop()

@@ -27,13 +27,25 @@ RecResult = tuple[RecLine, WordInfo | None]
 RecQueueItem = tuple[float, HWCImage, "asyncio.Future[RecResult]"]
 
 
+def generate_rec_buckets(max_width: int, count: int) -> tuple[int, ...]:
+    """Generate count evenly spaced positive integer widths ending at max_width."""
+    if type(max_width) is not int or type(count) is not int:
+        raise ValueError("Maximum width and count must be integers")
+    if max_width <= 0 or count <= 0:
+        raise ValueError("Maximum width and count must be positive")
+    if max_width % count:
+        raise ValueError("Maximum width must be divisible by bucket count")
+    step = max_width // count
+    return tuple(range(step, max_width + 1, step))
+
+
 class RecPipeline:
     def __init__(
         self,
         cfg: DictConfig,
-        widths: Iterable[int] = (320, 640, 960, 1280, 1920),
+        buckets: Iterable[int],
         batch_size: int = 16,
-        max_wait: float = 0.003,
+        max_wait: float = 0.02,
         return_word_box: bool = False,
         concurrency: int = 1,
     ) -> None:
@@ -59,7 +71,7 @@ class RecPipeline:
         )
         self._session = factory(cfg)
         self._return_word_box = return_word_box
-        self._widths = tuple(sorted(set(widths)))
+        self._widths = tuple(sorted(set(buckets)))
         self._batch_size = batch_size
         self._max_wait = max_wait
         self._queues: dict[int, deque[RecQueueItem]] = {
@@ -74,18 +86,17 @@ class RecPipeline:
         self._img_shape: tuple[int, int, int] = tuple(cfg.rec_img_shape)
         self._postprocess: CTCLabelDecode | None = None
 
-    async def start(self, warmup: bool = True) -> None:
+    async def start(self) -> None:
         loop = asyncio.get_running_loop()
         character, path = self._load_characters()
         self._postprocess = CTCLabelDecode(character=character, character_path=path)
-        if warmup:
-            c, h, _ = self._img_shape
-            for w in self._widths:
-                await loop.run_in_executor(
-                    self._executor,
-                    self._session,
-                    np.zeros((self._batch_size, c, h, w), np.float32),
-                )
+        c, h, _ = self._img_shape
+        for w in self._widths:
+            await loop.run_in_executor(
+                self._executor,
+                self._session,
+                np.zeros((self._batch_size, c, h, w), np.float32),
+            )
         self._worker = loop.create_task(self._run_batches())
 
     def _load_characters(self) -> tuple[list[str] | None, str | Path | None]:

@@ -4,6 +4,7 @@ import asyncio
 from collections import deque
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
+from math import isqrt
 from typing import Literal, cast
 
 import cv2
@@ -20,13 +21,36 @@ DetResult = tuple[TextDetOutput, list[HWCImage]]
 DetQueueItem = tuple[float, HWCImage, "asyncio.Future[DetResult]"]
 
 
+def generate_det_buckets(
+    min_size: int, max_size: int, count: int
+) -> tuple[tuple[int, int], ...]:
+    """Generate an evenly spaced height/width grid including both endpoints."""
+    if any(type(value) is not int for value in (min_size, max_size, count)):
+        raise ValueError("Bucket sizes and count must be integers")
+    if count <= 0 or isqrt(count) ** 2 != count:
+        raise ValueError("Bucket count must be the square of a positive integer n")
+    if min_size <= 0 or max_size < min_size or min_size % 32 or max_size % 32:
+        raise ValueError("Size range must be ordered positive multiples of 32")
+    n = isqrt(count)
+    if n == 1:
+        if min_size != max_size:
+            raise ValueError("A single bucket requires min_size == max_size")
+        return ((min_size, min_size),)
+    span = max_size - min_size
+    if span == 0 or span % ((n - 1) * 32):
+        raise ValueError("Range must produce n distinct evenly spaced multiples of 32")
+    step = span // (n - 1)
+    sizes = range(min_size, max_size + 1, step)
+    return tuple((height, width) for height in sizes for width in sizes)
+
+
 class DetPipeline:
     def __init__(
         self,
         cfg: DictConfig,
         buckets: Iterable[DetShape],
         batch_size: int = 4,
-        max_wait: float = 0.003,
+        max_wait: float = 0.02,
         concurrency: int = 1,
     ) -> None:
         factory = cast(
@@ -69,15 +93,14 @@ class DetPipeline:
         self._closed = False
         self._inflight: set[asyncio.Task[None]] = set()
 
-    async def start(self, warmup: bool = True) -> None:
+    async def start(self) -> None:
         loop = asyncio.get_running_loop()
-        if warmup:
-            for h, w in self._buckets:
-                await loop.run_in_executor(
-                    self._executor,
-                    self._session,
-                    np.zeros((self._batch_size, 3, h, w), np.float32),
-                )
+        for h, w in self._buckets:
+            await loop.run_in_executor(
+                self._executor,
+                self._session,
+                np.zeros((self._batch_size, 3, h, w), np.float32),
+            )
         self._worker = loop.create_task(self._run_batches())
 
     async def _run_batches(self) -> None:

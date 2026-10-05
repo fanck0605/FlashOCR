@@ -55,14 +55,13 @@ class ClsPipeline:
         self._worker: asyncio.Task[None] | None = None
         self._closed = False
 
-    async def start(self, warmup: bool = True) -> None:
+    async def start(self) -> None:
         loop = asyncio.get_running_loop()
-        if warmup:
-            await loop.run_in_executor(
-                self._executor,
-                self._session,
-                np.zeros((self._batch_size, *self._shape), np.float32),
-            )
+        await loop.run_in_executor(
+            self._executor,
+            self._session,
+            np.zeros((self._batch_size, *self._shape), np.float32),
+        )
         self._worker = loop.create_task(self._run_batches())
 
     async def classify(self, images: list[HWCImage]) -> TextClsOutput:

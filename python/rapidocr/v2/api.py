@@ -25,8 +25,8 @@ from ..utils.process_img import (
 )
 from ..utils.vis_res import VisRes
 from .cls_pipeline import ClsPipeline
-from .det_pipeline import DetPipeline
-from .rec_pipeline import RecPipeline
+from .det_pipeline import DetPipeline, generate_det_buckets
+from .rec_pipeline import RecPipeline, generate_rec_buckets
 from .typing import HWCImage
 
 _OCR = TypeVar("_OCR", bound="RapidOCRv2")
@@ -40,14 +40,8 @@ class RapidOCRv2:
         config_path: str | Path | None = None,
         params: dict[str, Any] | None = None,
         *,
-        det_buckets: Iterable[tuple[int, int]] = (
-            (512, 512),
-            (736, 736),
-            (736, 1280),
-            (1280, 736),
-            (1280, 1280),
-        ),
-        rec_widths: Iterable[int] = (320, 640, 960, 1280, 1920),
+        det_buckets: Iterable[tuple[int, int]] = generate_det_buckets(160, 640, 16),
+        rec_buckets: Iterable[int] = generate_rec_buckets(3840, 16),
         det_batch_size: int = 4,
         det_concurrency: int = 1,
         rec_batch_size: int = 16,
@@ -55,7 +49,6 @@ class RapidOCRv2:
         cls_batch_size: int = 16,
         cls_concurrency: int = 1,
         max_wait: float = 0.003,
-        warmup: bool = True,
     ) -> None:
         self._cfg = self._load_config(config_path, params)
         self._load_img = LoadImage()
@@ -73,7 +66,7 @@ class RapidOCRv2:
         if self._cfg.Global.use_rec:
             self._rec_pipeline = RecPipeline(
                 self._cfg.Rec,
-                rec_widths,
+                rec_buckets,
                 rec_batch_size,
                 max_wait,
                 return_word_box=self._cfg.Global.return_word_box,
@@ -84,7 +77,6 @@ class RapidOCRv2:
             self._cls_pipeline = ClsPipeline(
                 self._cfg.Cls, cls_batch_size, max_wait, concurrency=cls_concurrency
             )
-        self._warmup: bool = warmup
         self._start_task: asyncio.Task[None] | None = None
         self._closed: bool = False
         self._requests: set[asyncio.Task[RapidOCROutput]] = set()
@@ -117,11 +109,11 @@ class RapidOCRv2:
 
     async def _start(self) -> None:
         if self._det_pipeline is not None:
-            await self._det_pipeline.start(self._warmup)
+            await self._det_pipeline.start()
         if self._rec_pipeline is not None:
-            await self._rec_pipeline.start(self._warmup)
+            await self._rec_pipeline.start()
         if self._cls_pipeline is not None:
-            await self._cls_pipeline.start(self._warmup)
+            await self._cls_pipeline.start()
 
     def _prepare(self, image: InputType) -> tuple[HWCImage, HWCImage, dict[str, Any]]:
         original = self._load_img(image)
