@@ -2,15 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import math
+import sys
 from collections import deque
-from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import cv2
 import numpy as np
-from omegaconf import DictConfig
 
 from ..ch_ppocr_rec.typings import TextRecOutput, WordInfo
 from ..ch_ppocr_rec.utils import CTCLabelDecode
@@ -22,9 +21,19 @@ from ..utils.typings import LangRec
 from ..utils.utils import reorder_bidi_for_display, validate_rtl_dependency
 from .typing import HWCImage
 
-RecLine = tuple[str, float]
-RecResult = tuple[RecLine, WordInfo | None]
-RecQueueItem = tuple[float, HWCImage, "asyncio.Future[RecResult]"]
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable
+
+    from omegaconf import DictConfig
+
+if sys.version_info >= (3, 10):
+    from typing import TypeAlias
+else:
+    from typing_extensions import TypeAlias
+
+RecLine: TypeAlias = tuple[str, float]
+RecResult: TypeAlias = tuple[RecLine, WordInfo | None]
+RecQueueItem: TypeAlias = tuple[float, HWCImage, "asyncio.Future[RecResult]"]
 
 
 def generate_rec_buckets(max_width: int, count: int) -> tuple[int, ...]:
@@ -67,7 +76,7 @@ class RecPipeline:
         if self._is_arabic:
             validate_rtl_dependency()
         factory = cast(
-            Callable[[DictConfig], InferSession], get_engine(cfg.engine_type)
+            "Callable[[DictConfig], InferSession]", get_engine(cfg.engine_type)
         )
         self._session = factory(cfg)
         self._return_word_box = return_word_box
@@ -202,7 +211,7 @@ class RecPipeline:
             texts = reorder_bidi_for_display(texts)
         return TextRecOutput(
             images,
-            cast(tuple[str], tuple(str(text) for text in texts)),
+            cast("tuple[str]", tuple(str(text) for text in texts)),
             list(scores),
             tuple(words),
             elapse=0.0,

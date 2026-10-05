@@ -1,29 +1,39 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from collections import deque
-from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from math import isqrt
-from typing import Literal, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 import cv2
 import numpy as np
-from omegaconf import DictConfig
 
 from ..ch_ppocr_det.utils import DBPostProcess, DetPreProcess, TextDetOutput
 from ..inference_engine.base import InferSession, get_engine
 from ..utils.process_img import get_rotate_crop_image
 from .typing import HWCImage
 
-DetShape = tuple[int, int]
-DetResult = tuple[TextDetOutput, list[HWCImage]]
-DetQueueItem = tuple[float, HWCImage, "asyncio.Future[DetResult]"]
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable
+
+    from omegaconf import DictConfig
+
+if sys.version_info >= (3, 10):
+    from typing import TypeAlias
+else:
+    from typing_extensions import TypeAlias
+
+
+DetShape: TypeAlias = tuple[int, int]
+DetResult: TypeAlias = tuple[TextDetOutput, list[HWCImage]]
+DetQueueItem: TypeAlias = tuple[float, HWCImage, "asyncio.Future[DetResult]"]
 
 
 def generate_det_buckets(
     min_size: int, max_size: int, count: int
-) -> tuple[tuple[int, int], ...]:
+) -> tuple[DetShape, ...]:
     """Generate an evenly spaced height/width grid including both endpoints."""
     if any(type(value) is not int for value in (min_size, max_size, count)):
         raise ValueError("Bucket sizes and count must be integers")
@@ -54,7 +64,7 @@ class DetPipeline:
         concurrency: int = 1,
     ) -> None:
         factory = cast(
-            Callable[[DictConfig], InferSession], get_engine(cfg.engine_type)
+            "Callable[[DictConfig], InferSession]", get_engine(cfg.engine_type)
         )
         self._session = factory(cfg)
         self._preprocess = DetPreProcess(

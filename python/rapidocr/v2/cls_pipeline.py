@@ -2,26 +2,31 @@ from __future__ import annotations
 
 import asyncio
 import math
+import sys
 from collections import deque
-from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import cv2
 import numpy as np
-from omegaconf import DictConfig
 
 from ..ch_ppocr_cls.main import CLS_SHAPE_BY_OCR_VERSION
 from ..ch_ppocr_cls.utils import ClsPostProcess, TextClsOutput
 from ..inference_engine.base import InferSession, get_engine
 from .typing import HWCImage
 
-ClsResult = tuple[HWCImage, tuple[str, float]]
-ClsQueueItem = tuple[
-    float,
-    HWCImage,
-    "asyncio.Future[ClsResult]",
-]
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from omegaconf import DictConfig
+
+if sys.version_info >= (3, 10):
+    from typing import TypeAlias
+else:
+    from typing_extensions import TypeAlias
+
+ClsResult: TypeAlias = tuple[HWCImage, tuple[str, float]]
+ClsQueueItem: TypeAlias = tuple[float, HWCImage, "asyncio.Future[ClsResult]"]
 
 
 class ClsPipeline:
@@ -39,7 +44,7 @@ class ClsPipeline:
         if concurrency < 1:
             raise ValueError("Classification concurrency must be positive")
         factory = cast(
-            Callable[[DictConfig], InferSession], get_engine(cfg.engine_type)
+            "Callable[[DictConfig], InferSession]", get_engine(cfg.engine_type)
         )
         self._session = factory(cfg)
         self._shape = tuple(CLS_SHAPE_BY_OCR_VERSION[cfg.ocr_version])
@@ -154,7 +159,7 @@ class ClsPipeline:
         for image, (label, score) in zip(images, labels):
             rotated = (
                 cast(
-                    HWCImage,
+                    "HWCImage",
                     cv2.rotate(image, cv2.ROTATE_180),
                 )
                 if "180" in label and score > self._threshold
