@@ -16,9 +16,9 @@ from ...utils.process_img import (
     resize_image_within_bounds,
 )
 from ...utils.vis_res import VisRes
-from ..cls_pipeline import ClsPipeline
-from ..det_pipeline import DetPipeline, generate_det_buckets
-from ..rec_pipeline import RecPipeline, generate_rec_buckets
+from ..cls_engine import ClsEngine
+from ..det_engine import DetEngine, generate_det_buckets
+from ..rec_engine import RecEngine, generate_rec_buckets
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from ..typing import HWCImage
 
 
-class OCRPipeline:
+class OCREngine:
     """Compose detection, classification and recognition for loaded images."""
 
     def __init__(
@@ -48,18 +48,18 @@ class OCRPipeline:
     ) -> None:
         self._cfg = cfg
         self._cal_rec_boxes = CalRecBoxes()
-        self._det_pipeline: DetPipeline | None = None
+        self._det_engine: DetEngine | None = None
         if self._cfg.Global.use_det:
-            self._det_pipeline = DetPipeline(
+            self._det_engine = DetEngine(
                 self._cfg.Det,
                 det_buckets,
                 det_batch_size,
                 max_wait,
                 det_concurrency,
             )
-        self._rec_pipeline: RecPipeline | None = None
+        self._rec_engine: RecEngine | None = None
         if self._cfg.Global.use_rec:
-            self._rec_pipeline = RecPipeline(
+            self._rec_engine = RecEngine(
                 self._cfg.Rec,
                 rec_buckets,
                 rec_batch_size,
@@ -67,9 +67,9 @@ class OCRPipeline:
                 return_word_box=self._cfg.Global.return_word_box,
                 concurrency=rec_concurrency,
             )
-        self._cls_pipeline: ClsPipeline | None = None
+        self._cls_engine: ClsEngine | None = None
         if self._cfg.Global.use_cls:
-            self._cls_pipeline = ClsPipeline(
+            self._cls_engine = ClsEngine(
                 self._cfg.Cls, cls_batch_size, max_wait, concurrency=cls_concurrency
             )
         self._start_task: asyncio.Task[None] | None = None
@@ -84,12 +84,12 @@ class OCRPipeline:
         await asyncio.shield(self._start_task)
 
     async def _start(self) -> None:
-        if self._det_pipeline is not None:
-            await self._det_pipeline.start()
-        if self._rec_pipeline is not None:
-            await self._rec_pipeline.start()
-        if self._cls_pipeline is not None:
-            await self._cls_pipeline.start()
+        if self._det_engine is not None:
+            await self._det_engine.start()
+        if self._rec_engine is not None:
+            await self._rec_engine.start()
+        if self._cls_engine is not None:
+            await self._cls_engine.start()
 
     def _prepare(self, image: HWCImage) -> tuple[HWCImage, HWCImage, dict[str, Any]]:
         original = image
@@ -103,7 +103,7 @@ class OCRPipeline:
         record = {
             "preprocess": {"ratio_h": ratio_h, "ratio_w": ratio_w},
         }
-        if self._det_pipeline is not None and settings.use_vertical_padding:
+        if self._det_engine is not None and settings.use_vertical_padding:
             img, record = apply_vertical_padding(
                 img, record, settings.width_height_ratio, settings.min_height
             )
@@ -127,19 +127,19 @@ class OCRPipeline:
         original, prepared, record = self._prepare(image)
         det = TextDetOutput(img=prepared)
         crops = [prepared]
-        if self._det_pipeline is not None:
-            det, crops = await self._det_pipeline.detect(prepared)
+        if self._det_engine is not None:
+            det, crops = await self._det_engine.detect(prepared)
         if not crops:
             return RapidOCROutput()
         cls = TextClsOutput()
         rec_images = crops
-        if self._cls_pipeline is not None:
-            cls = await self._cls_pipeline.classify(crops)
+        if self._cls_engine is not None:
+            cls = await self._cls_engine.classify(crops)
             rec_images = cls.img_list
             assert rec_images is not None
-        if self._rec_pipeline is None:
+        if self._rec_engine is None:
             return self._build_detection_output(original, det, record)
-        rec = await self._rec_pipeline.recognize(rec_images)
+        rec = await self._rec_engine.recognize(rec_images)
         return self._build_output(original, det, cls, rec, crops, record)
 
     def _build_output(
@@ -233,9 +233,9 @@ class OCRPipeline:
             await self._start_task
         if self._requests:
             await asyncio.gather(*tuple(self._requests), return_exceptions=True)
-        if self._det_pipeline is not None:
-            await self._det_pipeline.close()
-        if self._cls_pipeline is not None:
-            await self._cls_pipeline.close()
-        if self._rec_pipeline is not None:
-            await self._rec_pipeline.close()
+        if self._det_engine is not None:
+            await self._det_engine.close()
+        if self._cls_engine is not None:
+            await self._cls_engine.close()
+        if self._rec_engine is not None:
+            await self._rec_engine.close()

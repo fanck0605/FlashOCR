@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .det_pipeline import generate_det_buckets
-from .rec_pipeline import generate_rec_buckets
+from .det_engine import generate_det_buckets
+from .rec_engine import generate_rec_buckets
 
 if TYPE_CHECKING:
     from .api import FlashOCR

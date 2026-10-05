@@ -279,15 +279,15 @@ async def benchmark_flash(
         warmup = time.perf_counter() - started
         if memory is not None:
             memory.phase("warmed")
-        pipeline = ocr._pipeline
-        assert pipeline._det_pipeline is not None
-        assert pipeline._cls_pipeline is not None
-        assert pipeline._rec_pipeline is not None
+        pipeline = ocr._engine
+        assert pipeline._det_engine is not None
+        assert pipeline._cls_engine is not None
+        assert pipeline._rec_engine is not None
         providers = check_providers(
             [
-                pipeline._det_pipeline._session,
-                pipeline._cls_pipeline._session,
-                pipeline._rec_pipeline._session,
+                pipeline._det_engine._session,
+                pipeline._cls_engine._session,
+                pipeline._rec_engine._session,
             ],
             args.cuda,
         )
@@ -300,9 +300,9 @@ async def benchmark_flash(
         if memory is not None:
             memory.phase("after_rounds")
         batch_stats = {
-            "det": pipeline._det_pipeline.batch_stats(),
-            "cls": pipeline._cls_pipeline.batch_stats(),
-            "rec": pipeline._rec_pipeline.batch_stats(),
+            "det": pipeline._det_engine.batch_stats(),
+            "cls": pipeline._cls_engine.batch_stats(),
+            "rec": pipeline._rec_engine.batch_stats(),
         }
     finally:
         await ocr.close()

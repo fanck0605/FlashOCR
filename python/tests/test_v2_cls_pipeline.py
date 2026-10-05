@@ -8,10 +8,10 @@ import numpy as np
 from omegaconf import OmegaConf
 
 from rapidocr.utils.typings import OCRVersion
-from rapidocr.v2.cls_pipeline import ClsPipeline
+from rapidocr.v2.cls_engine import ClsEngine
 
 
-class TestClsPipeline(unittest.TestCase):
+class TestClsEngine(unittest.TestCase):
     def test_cross_request_batching_rotation_and_fixed_shape(self) -> None:
         async def run() -> None:
             calls = []
@@ -35,10 +35,10 @@ class TestClsPipeline(unittest.TestCase):
                 }
             )
             with patch(
-                "rapidocr.v2.cls_pipeline.core.get_engine",
+                "rapidocr.v2.cls_engine.core.get_engine",
                 return_value=lambda cfg: session,
             ):
-                pipeline = ClsPipeline(cfg, batch_size=4, max_wait=0.005)
+                pipeline = ClsEngine(cfg, batch_size=4, max_wait=0.005)
             await pipeline.start()
             image = np.arange(6 * 8 * 3, dtype=np.uint8).reshape(6, 8, 3)
             try:

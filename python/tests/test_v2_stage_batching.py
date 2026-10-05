@@ -9,8 +9,8 @@ import numpy as np
 from omegaconf import OmegaConf
 
 from rapidocr.utils.typings import OCRVersion
-from rapidocr.v2.cls_pipeline import ClsPipeline
-from rapidocr.v2.rec_pipeline import RecPipeline
+from rapidocr.v2.cls_engine import ClsEngine
+from rapidocr.v2.rec_engine import RecEngine
 
 
 class TestStageBatching(unittest.IsolatedAsyncioTestCase):
@@ -23,8 +23,8 @@ class TestStageBatching(unittest.IsolatedAsyncioTestCase):
                 "label_list": ["0", "180"],
             }
         )
-        with patch("rapidocr.v2.cls_pipeline.core.get_engine", return_value=Mock()):
-            pipeline = ClsPipeline(cfg, batch_size=2, max_wait=10)
+        with patch("rapidocr.v2.cls_engine.core.get_engine", return_value=Mock()):
+            pipeline = ClsEngine(cfg, batch_size=2, max_wait=10)
         self.assertFalse(hasattr(pipeline, "_cfg"))
         image = np.zeros((8, 8, 3), np.uint8)
         pipeline._infer = AsyncMock(return_value=[(image, ("0", 1.0))] * 2)
@@ -57,11 +57,11 @@ class TestStageBatching(unittest.IsolatedAsyncioTestCase):
             }
         )
         if stage == "cls":
-            with patch("rapidocr.v2.cls_pipeline.core.get_engine", return_value=Mock()):
-                pipeline = ClsPipeline(cfg, batch_size=2, max_wait=10, concurrency=2)
+            with patch("rapidocr.v2.cls_engine.core.get_engine", return_value=Mock()):
+                pipeline = ClsEngine(cfg, batch_size=2, max_wait=10, concurrency=2)
         else:
-            with patch("rapidocr.v2.rec_pipeline.core.get_engine", return_value=Mock()):
-                pipeline = RecPipeline(
+            with patch("rapidocr.v2.rec_engine.core.get_engine", return_value=Mock()):
+                pipeline = RecEngine(
                     cfg, buckets=[32, 64], batch_size=2, max_wait=10, concurrency=2
                 )
         self.assertFalse(hasattr(pipeline, "_cfg"))

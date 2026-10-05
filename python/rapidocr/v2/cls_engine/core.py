@@ -4,6 +4,7 @@ import asyncio
 import math
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+from itertools import islice
 from typing import TYPE_CHECKING, cast
 
 import cv2
@@ -29,7 +30,7 @@ ClsResult: TypeAlias = tuple[HWCImage, tuple[str, float]]
 ClsQueueItem: TypeAlias = tuple[float, HWCImage, "asyncio.Future[ClsResult]"]
 
 
-class ClsPipeline:
+class ClsEngine:
     """Cross-request classification with one fixed input and batch shape."""
 
     def __init__(
@@ -95,7 +96,7 @@ class ClsPipeline:
 
     async def classify(self, images: list[HWCImage]) -> TextClsOutput:
         if self._closed:
-            raise RuntimeError("CLS pipeline is closed")
+            raise RuntimeError("CLS engine is closed")
         if not images:
             return TextClsOutput(img_list=[], cls_res=[], elapse=0.0)
         loop = asyncio.get_running_loop()
@@ -123,42 +124,45 @@ class ClsPipeline:
                 self._inflight.difference_update(done)
                 continue
             self._wakeup.clear()
-            if any(future.cancelled() for _, _, future in self._queue):
-                active = [item for item in self._queue if not item[2].cancelled()]
-                self._queue.clear()
-                self._queue.extend(active)
+            while self._queue and self._queue[0][2].cancelled():
+                self._queue.popleft()
             if not self._queue:
                 if self._closed:
                     return
                 await self._wakeup.wait()
                 continue
             delay = max(0.0, self._queue[0][0] + self._max_wait - loop.time())
-            if not self._closed and len(self._queue) < self._batch_size and delay > 0:
+            ready = self._closed or delay <= 0
+            if ready or len(self._queue) >= self._batch_size:
+                limit = min(len(self._queue), self._batch_size)
+                if any(entry[2].cancelled() for entry in islice(self._queue, limit)):
+                    active: list[ClsQueueItem] = []
+                    while self._queue and len(active) < limit:
+                        entry = self._queue.popleft()
+                        if not entry[2].cancelled():
+                            active.append(entry)
+                    self._queue.extendleft(reversed(active))
+                if not ready:
+                    ready = len(self._queue) >= self._batch_size
+            if not ready:
                 try:
                     await asyncio.wait_for(self._wakeup.wait(), delay)
                 except asyncio.TimeoutError:
                     pass
                 continue
-            pending: list[tuple[HWCImage, asyncio.Future[ClsResult]]] = []
             batch_size = 1 << (min(len(self._queue), self._batch_size).bit_length() - 1)
-            for _ in range(batch_size):
-                _, image, future = self._queue.popleft()
-                pending.append((image, future))
-            if not pending:
-                continue
+            pending = [self._queue.popleft() for _ in range(batch_size)]
             task = asyncio.create_task(self._infer_and_resolve(pending))
             self._inflight.add(task)
 
-    async def _infer_and_resolve(
-        self, pending: list[tuple[HWCImage, asyncio.Future[ClsResult]]]
-    ) -> None:
+    async def _infer_and_resolve(self, pending: list[ClsQueueItem]) -> None:
         try:
-            results = await self._infer([image for image, _ in pending])
-            for (_, future), result in zip(pending, results):
+            results = await self._infer([image for _, image, _ in pending])
+            for (_, _, future), result in zip(pending, results):
                 if not future.done():
                     future.set_result(result)
         except Exception as exc:  # noqa: BLE001
-            for _, future in pending:
+            for _, _, future in pending:
                 if not future.done():
                     future.set_exception(exc)
 

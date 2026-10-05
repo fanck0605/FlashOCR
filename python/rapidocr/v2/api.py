@@ -8,9 +8,9 @@ from typing import TYPE_CHECKING, Any
 from ..utils.load_image import InputType, LoadImage
 from ..utils.log import logger
 from ..utils.parse_parameters import ParseParams
-from .det_pipeline import DetShape, generate_det_buckets
-from .ocr_pipeline import OCRPipeline
-from .rec_pipeline import generate_rec_buckets
+from .det_engine import DetShape, generate_det_buckets
+from .ocr_engine import OCREngine
+from .rec_engine import generate_rec_buckets
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -27,7 +27,7 @@ else:
 
 
 class FlashOCR:
-    """Load configuration and images for the asynchronous OCR pipeline."""
+    """Load configuration and images for the asynchronous OCR engine."""
 
     def __init__(
         self,
@@ -46,7 +46,7 @@ class FlashOCR:
     ) -> None:
         cfg = self._load_config(config_path, params)
         self._load_img = LoadImage()
-        self._pipeline = OCRPipeline(
+        self._engine = OCREngine(
             cfg,
             det_buckets=det_buckets,
             rec_buckets=rec_buckets,
@@ -78,18 +78,18 @@ class FlashOCR:
         return cfg
 
     async def start(self) -> Self:
-        await self._pipeline.start()
+        await self._engine.start()
         return self
 
     async def __call__(self, image: InputType) -> RapidOCROutput:
         await self.start()
-        return await self._pipeline(self._load_img(image))
+        return await self._engine(self._load_img(image))
 
     async def batch(self, images: Iterable[InputType]) -> list[RapidOCROutput]:
         return list(await asyncio.gather(*(self(image) for image in images)))
 
     async def close(self) -> None:
-        await self._pipeline.close()
+        await self._engine.close()
 
     async def __aenter__(self) -> Self:
         return await self.start()

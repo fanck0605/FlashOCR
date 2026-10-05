@@ -4,6 +4,7 @@ import asyncio
 import math
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -48,7 +49,7 @@ def generate_rec_buckets(max_width: int, count: int) -> tuple[int, ...]:
     return tuple(range(step, max_width + 1, step))
 
 
-class RecPipeline:
+class RecEngine:
     def __init__(
         self,
         cfg: DictConfig,
@@ -169,18 +170,26 @@ class RecPipeline:
             oldest = float("inf")
             deadline = float("inf")
             for width, queue in self._queues.items():
-                if any(future.cancelled() for _, _, future in queue):
-                    active = [item for item in queue if not item[2].cancelled()]
-                    queue.clear()
-                    queue.extend(active)
+                while queue and queue[0][2].cancelled():
+                    queue.popleft()
                 if not queue:
                     continue
                 arrived = queue[0][0]
                 expires = arrived + self._max_wait
                 deadline = min(deadline, expires)
-                if (
-                    self._closed or len(queue) >= self._batch_size or expires <= now
-                ) and arrived < oldest:
+                ready = self._closed or expires <= now
+                if ready or len(queue) >= self._batch_size:
+                    limit = min(len(queue), self._batch_size)
+                    if any(entry[2].cancelled() for entry in islice(queue, limit)):
+                        active: list[RecQueueItem] = []
+                        while queue and len(active) < limit:
+                            entry = queue.popleft()
+                            if not entry[2].cancelled():
+                                active.append(entry)
+                        queue.extendleft(reversed(active))
+                    if not ready:
+                        ready = len(queue) >= self._batch_size
+                if ready and arrived < oldest:
                     selected, oldest = width, arrived
             if selected is None:
                 if deadline == float("inf"):
@@ -194,28 +203,21 @@ class RecPipeline:
                     pass
                 continue
             queue = self._queues[selected]
-            pending: list[tuple[HWCImage, asyncio.Future[RecResult]]] = []
             batch_size = 1 << (min(len(queue), self._batch_size).bit_length() - 1)
-            for _ in range(batch_size):
-                _, image, future = queue.popleft()
-                pending.append((image, future))
-            if not pending:
-                continue
+            pending = [queue.popleft() for _ in range(batch_size)]
             task = asyncio.create_task(self._infer_and_resolve(selected, pending))
             self._inflight.add(task)
 
-    async def _infer_and_resolve(
-        self, width: int, pending: list[tuple[HWCImage, asyncio.Future[RecResult]]]
-    ) -> None:
+    async def _infer_and_resolve(self, width: int, pending: list[RecQueueItem]) -> None:
         try:
             results = await asyncio.get_running_loop().run_in_executor(
-                self._executor, self._infer, width, [image for image, _ in pending]
+                self._executor, self._infer, width, [image for _, image, _ in pending]
             )
-            for (_, future), result in zip(pending, results):
+            for (_, _, future), result in zip(pending, results):
                 if not future.done():
                     future.set_result(result)
         except Exception as exc:  # noqa: BLE001
-            for _, future in pending:
+            for _, _, future in pending:
                 if not future.done():
                     future.set_exception(exc)
 
@@ -227,7 +229,7 @@ class RecPipeline:
             width = math.ceil(height * image.shape[1] / image.shape[0])
             bucket = next((w for w in self._widths if w >= width), self._widths[-1])
             if self._closed:
-                raise RuntimeError("Rec pipeline is closed")
+                raise RuntimeError("Rec engine is closed")
             loop = asyncio.get_running_loop()
             future: asyncio.Future[RecResult] = loop.create_future()
             self._queues[bucket].append((loop.time(), image, future))
