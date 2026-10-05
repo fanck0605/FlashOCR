@@ -39,8 +39,14 @@ class ClsPipeline:
         max_wait: float = 0.02,
         concurrency: int = 1,
     ) -> None:
-        if batch_size < 1 or max_wait < 0:
-            raise ValueError("Invalid CLS batch size or wait time")
+        if (
+            type(batch_size) is not int
+            or batch_size < 1
+            or batch_size & (batch_size - 1)
+        ):
+            raise ValueError("Classification batch size must be a power of two")
+        if max_wait < 0:
+            raise ValueError("Classification wait time must be nonnegative")
         if concurrency < 1:
             raise ValueError("Classification concurrency must be positive")
         factory = cast(
@@ -78,11 +84,13 @@ class ClsPipeline:
 
     async def start(self) -> None:
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(
-            self._executor,
-            self._session,
-            np.zeros((self._batch_size, *self._shape), np.float32),
-        )
+        for exponent in range(self._batch_size.bit_length()):
+            batch_size = 1 << exponent
+            await loop.run_in_executor(
+                self._executor,
+                self._session,
+                np.zeros((batch_size, *self._shape), np.float32),
+            )
         self._worker = loop.create_task(self._run_batches())
 
     async def classify(self, images: list[HWCImage]) -> TextClsOutput:
@@ -115,6 +123,10 @@ class ClsPipeline:
                 self._inflight.difference_update(done)
                 continue
             self._wakeup.clear()
+            if any(future.cancelled() for _, _, future in self._queue):
+                active = [item for item in self._queue if not item[2].cancelled()]
+                self._queue.clear()
+                self._queue.extend(active)
             if not self._queue:
                 if self._closed:
                     return
@@ -128,10 +140,10 @@ class ClsPipeline:
                     pass
                 continue
             pending: list[tuple[HWCImage, asyncio.Future[ClsResult]]] = []
-            for _ in range(min(len(self._queue), self._batch_size)):
+            batch_size = 1 << (min(len(self._queue), self._batch_size).bit_length() - 1)
+            for _ in range(batch_size):
                 _, image, future = self._queue.popleft()
-                if not future.cancelled():
-                    pending.append((image, future))
+                pending.append((image, future))
             if not pending:
                 continue
             task = asyncio.create_task(self._infer_and_resolve(pending))
@@ -165,7 +177,7 @@ class ClsPipeline:
         assert self._session is not None
         self._batch_count += 1
         self._sample_count += len(images)
-        tensor = np.zeros((self._batch_size, *self._shape), np.float32)
+        tensor = np.zeros((len(images), *self._shape), np.float32)
         for i, image in enumerate(images):
             tensor[i] = self._prepare(image)
             await asyncio.sleep(0)

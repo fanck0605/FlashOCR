@@ -100,7 +100,9 @@ class OCRPipeline:
             )
         else:
             img, ratio_h, ratio_w = original, 1.0, 1.0
-        record = {"preprocess": {"ratio_h": ratio_h, "ratio_w": ratio_w}}
+        record = {
+            "preprocess": {"ratio_h": ratio_h, "ratio_w": ratio_w},
+        }
         if self._det_pipeline is not None and settings.use_vertical_padding:
             img, record = apply_vertical_padding(
                 img, record, settings.width_height_ratio, settings.min_height

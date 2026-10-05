@@ -73,6 +73,9 @@ class DetPipeline:
             mean=cfg.get("mean"),
             std=cfg.get("std"),
         )
+        self._padding_value = np.asarray(
+            -self._preprocess.mean / self._preprocess.std, dtype=np.float32
+        )
         self._postprocess = DBPostProcess(
             thresh=cfg.get("thresh", 0.3),
             box_thresh=cfg.get("box_thresh", 0.5),
@@ -89,6 +92,12 @@ class DetPipeline:
                 raise ValueError(
                     f"Detection bucket dimensions must be positive multiples of 32: {(h, w)}"
                 )
+        if (
+            type(batch_size) is not int
+            or batch_size < 1
+            or batch_size & (batch_size - 1)
+        ):
+            raise ValueError("Detection batch size must be a power of two")
         self._batch_size = batch_size
         self._max_wait = max_wait
         if concurrency < 1:
@@ -122,11 +131,13 @@ class DetPipeline:
     async def start(self) -> None:
         loop = asyncio.get_running_loop()
         for h, w in self._buckets:
-            await loop.run_in_executor(
-                self._executor,
-                self._session,
-                np.zeros((self._batch_size, 3, h, w), np.float32),
-            )
+            for exponent in range(self._batch_size.bit_length()):
+                batch_size = 1 << exponent
+                await loop.run_in_executor(
+                    self._executor,
+                    self._session,
+                    np.zeros((batch_size, 3, h, w), np.float32),
+                )
         self._worker = loop.create_task(self._run_batches())
 
     async def _run_batches(self) -> None:
@@ -145,6 +156,10 @@ class DetPipeline:
             oldest = float("inf")
             deadline = float("inf")
             for shape, queue in self._queues.items():
+                if any(future.cancelled() for _, _, future in queue):
+                    active = [item for item in queue if not item[2].cancelled()]
+                    queue.clear()
+                    queue.extend(active)
                 if not queue:
                     continue
                 arrived = queue[0][0]
@@ -167,10 +182,10 @@ class DetPipeline:
                 continue
             queue = self._queues[selected]
             pending: list[tuple[HWCImage, asyncio.Future[DetResult]]] = []
-            for _ in range(min(len(queue), self._batch_size)):
+            batch_size = 1 << (min(len(queue), self._batch_size).bit_length() - 1)
+            for _ in range(batch_size):
                 _, item, future = queue.popleft()
-                if not future.cancelled():
-                    pending.append((item, future))
+                pending.append((item, future))
             if not pending:
                 continue
             task = asyncio.create_task(self._infer_and_resolve(selected, pending))
@@ -222,8 +237,8 @@ class DetPipeline:
         pre = self._preprocess
         tensor: np.ndarray[tuple[int, Literal[3], int, int], np.dtype[np.float32]] = (
             np.broadcast_to(
-                np.asarray(-pre.mean / pre.std, dtype=np.float32)[:, None, None],
-                (self._batch_size, 3, bh, bw),
+                self._padding_value[:, None, None],
+                (len(items), 3, bh, bw),
             ).copy()
         )
         resized_shapes: list[DetShape] = []

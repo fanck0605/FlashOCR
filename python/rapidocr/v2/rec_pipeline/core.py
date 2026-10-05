@@ -198,8 +198,7 @@ class RecPipeline:
             batch_size = 1 << (min(len(queue), self._batch_size).bit_length() - 1)
             for _ in range(batch_size):
                 _, image, future = queue.popleft()
-                if not future.cancelled():
-                    pending.append((image, future))
+                pending.append((image, future))
             if not pending:
                 continue
             task = asyncio.create_task(self._infer_and_resolve(selected, pending))
