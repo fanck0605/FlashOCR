@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import math
-import sys
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, cast
@@ -16,14 +15,15 @@ from ..inference_engine.base import InferSession, get_engine
 from .typing import HWCImage
 
 if TYPE_CHECKING:
+    import sys
     from collections.abc import Callable
 
     from omegaconf import DictConfig
 
-if sys.version_info >= (3, 10):
-    from typing import TypeAlias
-else:
-    from typing_extensions import TypeAlias
+    if sys.version_info >= (3, 10):
+        from typing import TypeAlias
+    else:
+        from typing_extensions import TypeAlias
 
 ClsResult: TypeAlias = tuple[HWCImage, tuple[str, float]]
 ClsQueueItem: TypeAlias = tuple[float, HWCImage, "asyncio.Future[ClsResult]"]
@@ -36,7 +36,7 @@ class ClsPipeline:
         self,
         cfg: DictConfig,
         batch_size: int = 16,
-        max_wait: float = 0.003,
+        max_wait: float = 0.02,
         concurrency: int = 1,
     ) -> None:
         if batch_size < 1 or max_wait < 0:

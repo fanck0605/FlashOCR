@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import math
-import sys
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -22,14 +21,15 @@ from ..utils.utils import reorder_bidi_for_display, validate_rtl_dependency
 from .typing import HWCImage
 
 if TYPE_CHECKING:
+    import sys
     from collections.abc import Callable, Iterable
 
     from omegaconf import DictConfig
 
-if sys.version_info >= (3, 10):
-    from typing import TypeAlias
-else:
-    from typing_extensions import TypeAlias
+    if sys.version_info >= (3, 10):
+        from typing import TypeAlias
+    else:
+        from typing_extensions import TypeAlias
 
 RecLine: TypeAlias = tuple[str, float]
 RecResult: TypeAlias = tuple[RecLine, WordInfo | None]

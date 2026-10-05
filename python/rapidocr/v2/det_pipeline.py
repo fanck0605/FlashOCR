@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import sys
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from math import isqrt
@@ -16,14 +15,15 @@ from ..utils.process_img import get_rotate_crop_image
 from .typing import HWCImage
 
 if TYPE_CHECKING:
+    import sys
     from collections.abc import Callable, Iterable
 
     from omegaconf import DictConfig
 
-if sys.version_info >= (3, 10):
-    from typing import TypeAlias
-else:
-    from typing_extensions import TypeAlias
+    if sys.version_info >= (3, 10):
+        from typing import TypeAlias
+    else:
+        from typing_extensions import TypeAlias
 
 
 DetShape: TypeAlias = tuple[int, int]
