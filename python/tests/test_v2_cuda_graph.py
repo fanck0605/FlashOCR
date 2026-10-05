@@ -98,8 +98,8 @@ class CudaGraphTests(unittest.TestCase):
                 det_buckets=((480, 480),),
                 rec_buckets=(480,),
                 det_batch_size=1,
-                cls_batch_size=2,
-                rec_batch_size=2,
+                cls_batch_size=4,
+                rec_batch_size=4,
             )
             try:
                 results = await ocr.batch([ROOT / "tests/test_files/ch_en_num.jpg"] * 3)

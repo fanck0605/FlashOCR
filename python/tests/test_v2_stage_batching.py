@@ -23,17 +23,18 @@ class TestStageBatching(unittest.IsolatedAsyncioTestCase):
                 "label_list": ["0", "180"],
             }
         )
-        with patch("rapidocr.v2.cls_engine.core.get_engine", return_value=Mock()):
-            pipeline = ClsEngine(cfg, batch_size=2, max_wait=10)
+        with patch("rapidocr.v2.cls_engine.core.create_session", return_value=Mock()):
+            pipeline = ClsEngine(cfg, batch_size=4, max_wait=10)
         self.assertFalse(hasattr(pipeline, "_cfg"))
         image = np.zeros((8, 8, 3), np.uint8)
-        pipeline._infer = AsyncMock(return_value=[(image, ("0", 1.0))] * 2)
+        pipeline._infer = AsyncMock(return_value=[(image, ("0", 1.0))] * 4)
         pipeline._worker = asyncio.create_task(pipeline._run_batches())
         first = asyncio.create_task(pipeline.classify([image]))
         try:
             await asyncio.sleep(0.01)
-            second = asyncio.create_task(pipeline.classify([image]))
-            await asyncio.wait_for(asyncio.gather(first, second), 2)
+            second = asyncio.create_task(pipeline.classify([image, image]))
+            third = asyncio.create_task(pipeline.classify([image]))
+            await asyncio.wait_for(asyncio.gather(first, second, third), 2)
             self.assertEqual(pipeline._infer.await_count, 1)
         finally:
             await asyncio.wait_for(pipeline.close(), 2)
@@ -57,12 +58,16 @@ class TestStageBatching(unittest.IsolatedAsyncioTestCase):
             }
         )
         if stage == "cls":
-            with patch("rapidocr.v2.cls_engine.core.get_engine", return_value=Mock()):
-                pipeline = ClsEngine(cfg, batch_size=2, max_wait=10, concurrency=2)
+            with patch(
+                "rapidocr.v2.cls_engine.core.create_session", return_value=Mock()
+            ):
+                pipeline = ClsEngine(cfg, batch_size=4, max_wait=10, concurrency=2)
         else:
-            with patch("rapidocr.v2.rec_engine.core.get_engine", return_value=Mock()):
+            with patch(
+                "rapidocr.v2.rec_engine.core.create_session", return_value=Mock()
+            ):
                 pipeline = RecEngine(
-                    cfg, buckets=[32, 64], batch_size=2, max_wait=10, concurrency=2
+                    cfg, buckets=[32, 64], batch_size=4, max_wait=10, concurrency=2
                 )
         self.assertFalse(hasattr(pipeline, "_cfg"))
         loop = asyncio.get_running_loop()
@@ -103,7 +108,7 @@ class TestStageBatching(unittest.IsolatedAsyncioTestCase):
             queue = (
                 pipeline._queue
                 if stage == "cls"
-                else pipeline._queues[32 if i < 4 else 64]
+                else pipeline._queues[32 if i < 4 or i == 8 else 64]
             )
             queue.append((loop.time(), image, future))
         futures[-1].cancel()

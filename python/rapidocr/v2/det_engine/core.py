@@ -60,7 +60,7 @@ class DetEngine:
         self,
         cfg: DictConfig,
         buckets: Iterable[DetShape],
-        batch_size: int = 4,
+        batch_size: int = 2,
         max_wait: float = 0.02,
         concurrency: int = 1,
     ) -> None:

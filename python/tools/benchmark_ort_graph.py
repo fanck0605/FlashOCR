@@ -15,6 +15,7 @@ def main() -> None:
     parser.add_argument("--provider", choices=("cuda", "tensorrt"), default="cuda")
     parser.add_argument("--cuda-graph", action="store_true")
     parser.add_argument("--iterations", type=int, default=200)
+    parser.add_argument("--det-batch-size", type=int, default=0)
     parser.add_argument(
         "--stages",
         nargs="+",
@@ -24,6 +25,8 @@ def main() -> None:
     args = parser.parse_args()
     if args.iterations < 1:
         parser.error("iterations must be positive")
+    if args.det_batch_size < 0:
+        parser.error("det-batch-size must be nonnegative")
     if args.cuda_graph and args.provider != "cuda":
         parser.error("CUDA Graph test requires CUDA EP")
     ort.preload_dlls()
@@ -97,6 +100,10 @@ def main() -> None:
         samples = 0
         for graph_id, filename in enumerate(entry["tensors"]):
             tensor = np.load(args.tensor_dir / filename)
+            if stage == "det" and args.det_batch_size:
+                tensor = np.ascontiguousarray(
+                    np.repeat(tensor[:1], args.det_batch_size, axis=0)
+                )
             samples += len(tensor)
             value = ort.OrtValue.ortvalue_from_numpy(tensor, "cuda", 0)
             binding = session.io_binding()
@@ -147,7 +154,10 @@ def main() -> None:
             report[stage]["provider_node_calls"] = counts
         print(stage, json.dumps(report[stage]), flush=True)
         del calls, session
-    path = args.tensor_dir / f"{args.provider}_graph_{args.cuda_graph}_report.json"
+    suffix = f"_det_batch{args.det_batch_size}" if args.det_batch_size else ""
+    path = (
+        args.tensor_dir / f"{args.provider}_graph_{args.cuda_graph}{suffix}_report.json"
+    )
     path.write_text(json.dumps(report, indent=2))
 
 

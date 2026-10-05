@@ -41,10 +41,10 @@ class ClsEngine:
     ) -> None:
         if (
             type(batch_size) is not int
-            or batch_size < 1
+            or batch_size < 4
             or batch_size & (batch_size - 1)
         ):
-            raise ValueError("Classification batch size must be a power of two")
+            raise ValueError("Classification batch size must be a power of two >= 4")
         if max_wait < 0:
             raise ValueError("Classification wait time must be nonnegative")
         if concurrency < 1:
@@ -81,7 +81,7 @@ class ClsEngine:
 
     async def start(self) -> None:
         loop = asyncio.get_running_loop()
-        for exponent in range(self._batch_size.bit_length()):
+        for exponent in range(2, self._batch_size.bit_length()):
             batch_size = 1 << exponent
             await loop.run_in_executor(
                 self._executor,
@@ -146,8 +146,10 @@ class ClsEngine:
                 except asyncio.TimeoutError:
                     pass
                 continue
-            batch_size = 1 << (min(len(self._queue), self._batch_size).bit_length() - 1)
-            pending = [self._queue.popleft() for _ in range(batch_size)]
+            available = min(len(self._queue), self._batch_size)
+            batch_size = max(4, 1 << (available.bit_length() - 1))
+            batch_size = min(batch_size, self._batch_size)
+            pending = [self._queue.popleft() for _ in range(min(available, batch_size))]
             task = asyncio.create_task(self._infer_and_resolve(pending))
             self._inflight.add(task)
 
@@ -177,7 +179,7 @@ class ClsEngine:
         assert self._session is not None
         self._batch_count += 1
         self._sample_count += len(images)
-        tensor = np.zeros((len(images), *self._shape), np.float32)
+        tensor = np.zeros((max(4, len(images)), *self._shape), np.float32)
         for i, image in enumerate(images):
             tensor[i] = self._prepare(image)
             await asyncio.sleep(0)

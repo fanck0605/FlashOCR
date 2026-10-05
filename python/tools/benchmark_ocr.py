@@ -121,8 +121,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cuda", action="store_true")
     parser.add_argument("--max-wait", type=float, default=0.02)
     parser.add_argument("--cls-batch-size", type=int, default=16)
-    parser.add_argument("--rec-batch-size", type=int, default=32)
-    parser.add_argument("--rec-max-width", type=int, default=3840)
+    parser.add_argument("--rec-batch-size", type=int, default=8)
+    parser.add_argument("--rec-max-width", type=int, default=3040)
+    parser.add_argument("--rec-min-width", type=int, default=256)
     parser.add_argument("--rec-bucket-count", type=int, default=8)
     parser.add_argument("--disable-cuda-graph", action="store_true")
     parser.add_argument("--engine", choices=("both", "rapid", "flash"), default="both")
@@ -290,7 +291,9 @@ async def benchmark_flash(
         rec_concurrency=args.rec_concurrency,
         cls_batch_size=args.cls_batch_size,
         rec_batch_size=args.rec_batch_size,
-        rec_buckets=generate_rec_buckets(args.rec_max_width, args.rec_bucket_count),
+        rec_buckets=generate_rec_buckets(
+            args.rec_min_width, args.rec_max_width, args.rec_bucket_count
+        ),
         max_wait=args.max_wait,
     )
     init = time.perf_counter() - started
@@ -425,6 +428,8 @@ async def run(args: argparse.Namespace) -> int:
                     str(args.rec_batch_size),
                     "--rec-max-width",
                     str(args.rec_max_width),
+                    "--rec-min-width",
+                    str(args.rec_min_width),
                     "--rec-bucket-count",
                     str(args.rec_bucket_count),
                     "--output",

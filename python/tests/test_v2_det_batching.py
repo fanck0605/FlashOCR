@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import unittest
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, Mock, patch
 
 import numpy as np
@@ -9,7 +10,9 @@ from omegaconf import OmegaConf
 
 from rapidocr.ch_ppocr_det.utils import TextDetOutput
 from rapidocr.v2.det_engine import DetEngine, DetResult, DetShape
-from rapidocr.v2.typing import HWCImage
+
+if TYPE_CHECKING:
+    from rapidocr.v2.typing import HWCImage
 
 
 class TestDetBatching(unittest.IsolatedAsyncioTestCase):
@@ -17,7 +20,7 @@ class TestDetBatching(unittest.IsolatedAsyncioTestCase):
         cfg = OmegaConf.create(
             {"limit_side_len": 960, "limit_type": "max", "engine_type": "fake"}
         )
-        with patch("rapidocr.v2.det_engine.core.get_engine", return_value=Mock()):
+        with patch("rapidocr.v2.det_engine.core.create_session", return_value=Mock()):
             pipeline = DetEngine(
                 cfg,
                 [(32, 32), (64, 64)],

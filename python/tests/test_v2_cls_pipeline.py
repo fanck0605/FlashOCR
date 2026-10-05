@@ -35,8 +35,8 @@ class TestClsEngine(unittest.TestCase):
                 }
             )
             with patch(
-                "rapidocr.v2.cls_engine.core.get_engine",
-                return_value=lambda cfg: session,
+                "rapidocr.v2.cls_engine.core.create_session",
+                return_value=session,
             ):
                 pipeline = ClsEngine(cfg, batch_size=4, max_wait=0.005)
             await pipeline.start()
@@ -44,7 +44,8 @@ class TestClsEngine(unittest.TestCase):
             try:
                 left, right = await asyncio.wait_for(
                     asyncio.gather(
-                        pipeline.classify([image]), pipeline.classify([image.copy()])
+                        pipeline.classify([image, image]),
+                        pipeline.classify([image.copy(), image.copy()]),
                     ),
                     2,
                 )
@@ -62,6 +63,9 @@ class TestClsEngine(unittest.TestCase):
                 )
                 empty = await pipeline.classify([])
                 assert empty.img_list == [] and empty.cls_res == []
+                single = await asyncio.wait_for(pipeline.classify([image]), 2)
+                assert len(single.cls_res) == 1
+                assert calls[-1] == (4, 3, 48, 192)
             finally:
                 await pipeline.close()
 

@@ -38,16 +38,21 @@ RecResult: TypeAlias = tuple[RecLine, WordInfo | None]
 RecQueueItem: TypeAlias = tuple[float, HWCImage, "asyncio.Future[RecResult]"]
 
 
-def generate_rec_buckets(max_width: int, count: int) -> tuple[int, ...]:
-    """Generate count evenly spaced positive integer widths ending at max_width."""
-    if type(max_width) is not int or type(count) is not int:
-        raise ValueError("Maximum width and count must be integers")
-    if max_width <= 0 or count <= 0:
-        raise ValueError("Maximum width and count must be positive")
-    if max_width % count:
-        raise ValueError("Maximum width must be divisible by bucket count")
-    step = max_width // count
-    return tuple(range(step, max_width + 1, step))
+def generate_rec_buckets(min_width: int, max_width: int, count: int) -> tuple[int, ...]:
+    """Generate count evenly spaced positive integer widths."""
+    if any(type(value) is not int for value in (min_width, max_width, count)):
+        raise ValueError("Bucket widths and count must be integers")
+    if min_width <= 0 or max_width < min_width or count < 1:
+        raise ValueError("Bucket widths must be positive and ordered")
+    if count == 1:
+        if min_width != max_width:
+            raise ValueError("A single bucket requires min_width == max_width")
+        return (min_width,)
+    span = max_width - min_width
+    if span == 0 or span % (count - 1):
+        raise ValueError("Width range must produce evenly spaced integer buckets")
+    step = span // (count - 1)
+    return tuple(range(min_width, max_width + 1, step))
 
 
 class RecEngine:
@@ -55,17 +60,17 @@ class RecEngine:
         self,
         cfg: DictConfig,
         buckets: Iterable[int],
-        batch_size: int = 32,
+        batch_size: int = 8,
         max_wait: float = 0.02,
         return_word_box: bool = False,
         concurrency: int = 1,
     ) -> None:
         if (
             type(batch_size) is not int
-            or batch_size < 1
+            or batch_size < 4
             or batch_size & (batch_size - 1)
         ):
-            raise ValueError("Recognition batch size must be a power of two")
+            raise ValueError("Recognition batch size must be a power of two >= 4")
         if concurrency < 1:
             raise ValueError("Recognition concurrency must be positive")
         self._is_arabic = normalize_lang(cfg.lang_type) == LangRec.ARABIC.value
@@ -121,7 +126,7 @@ class RecEngine:
         self._postprocess = CTCLabelDecode(character=character, character_path=path)
         c, h, _ = self._img_shape
         batch_sizes = tuple(
-            1 << exponent for exponent in range(self._batch_size.bit_length())
+            1 << exponent for exponent in range(2, self._batch_size.bit_length())
         )
         for w in self._widths:
             for batch_size in batch_sizes:
@@ -201,8 +206,10 @@ class RecEngine:
                     pass
                 continue
             queue = self._queues[selected]
-            batch_size = 1 << (min(len(queue), self._batch_size).bit_length() - 1)
-            pending = [queue.popleft() for _ in range(batch_size)]
+            available = min(len(queue), self._batch_size)
+            batch_size = max(4, 1 << (available.bit_length() - 1))
+            batch_size = min(batch_size, self._batch_size)
+            pending = [queue.popleft() for _ in range(min(available, batch_size))]
             task = asyncio.create_task(self._infer_and_resolve(selected, pending))
             self._inflight.add(task)
 
@@ -255,7 +262,7 @@ class RecEngine:
         self._batch_count += 1
         self._sample_count += len(images)
         c, h, _ = self._img_shape
-        tensor = np.zeros((len(images), c, h, width), np.float32)
+        tensor = np.zeros((max(4, len(images)), c, h, width), np.float32)
         ratios = [img.shape[1] / img.shape[0] for img in images]
         max_ratio = width / h
         for i, image in enumerate(images):
