@@ -26,7 +26,7 @@ else:
     from typing_extensions import Self
 
 
-class RapidOCRv2:
+class FlashOCR:
     """Load configuration and images for the asynchronous OCR pipeline."""
 
     def __init__(
@@ -35,14 +35,14 @@ class RapidOCRv2:
         params: dict[str, Any] | None = None,
         *,
         det_buckets: Iterable[DetShape] = generate_det_buckets(160, 640, 16),
-        rec_buckets: Iterable[int] = generate_rec_buckets(3840, 16),
+        rec_buckets: Iterable[int] = generate_rec_buckets(3840, 8),
         det_batch_size: int = 4,
         det_concurrency: int = 1,
-        rec_batch_size: int = 16,
+        rec_batch_size: int = 32,
         rec_concurrency: int = 1,
         cls_batch_size: int = 16,
         cls_concurrency: int = 1,
-        max_wait: float = 0.003,
+        max_wait: float = 0.02,
     ) -> None:
         cfg = self._load_config(config_path, params)
         self._load_img = LoadImage()

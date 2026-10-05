@@ -23,7 +23,7 @@ class TestStageBatching(unittest.IsolatedAsyncioTestCase):
                 "label_list": ["0", "180"],
             }
         )
-        with patch("rapidocr.v2.cls_pipeline.get_engine", return_value=Mock()):
+        with patch("rapidocr.v2.cls_pipeline.core.get_engine", return_value=Mock()):
             pipeline = ClsPipeline(cfg, batch_size=2, max_wait=10)
         self.assertFalse(hasattr(pipeline, "_cfg"))
         image = np.zeros((8, 8, 3), np.uint8)
@@ -57,10 +57,10 @@ class TestStageBatching(unittest.IsolatedAsyncioTestCase):
             }
         )
         if stage == "cls":
-            with patch("rapidocr.v2.cls_pipeline.get_engine", return_value=Mock()):
+            with patch("rapidocr.v2.cls_pipeline.core.get_engine", return_value=Mock()):
                 pipeline = ClsPipeline(cfg, batch_size=2, max_wait=10, concurrency=2)
         else:
-            with patch("rapidocr.v2.rec_pipeline.get_engine", return_value=Mock()):
+            with patch("rapidocr.v2.rec_pipeline.core.get_engine", return_value=Mock()):
                 pipeline = RecPipeline(
                     cfg, buckets=[32, 64], batch_size=2, max_wait=10, concurrency=2
                 )

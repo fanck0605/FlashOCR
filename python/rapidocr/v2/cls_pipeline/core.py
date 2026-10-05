@@ -9,10 +9,10 @@ from typing import TYPE_CHECKING, cast
 import cv2
 import numpy as np
 
-from ..ch_ppocr_cls.main import CLS_SHAPE_BY_OCR_VERSION
-from ..ch_ppocr_cls.utils import ClsPostProcess, TextClsOutput
-from ..inference_engine.base import InferSession, get_engine
-from .typing import HWCImage
+from ...ch_ppocr_cls.main import CLS_SHAPE_BY_OCR_VERSION
+from ...ch_ppocr_cls.utils import ClsPostProcess, TextClsOutput
+from ...inference_engine.base import InferSession, get_engine
+from ..typing import HWCImage
 
 if TYPE_CHECKING:
     import sys
@@ -59,6 +59,22 @@ class ClsPipeline:
         self._executor = ThreadPoolExecutor(max_workers=concurrency)
         self._worker: asyncio.Task[None] | None = None
         self._closed = False
+        self._batch_count = 0
+        self._sample_count = 0
+
+    def batch_stats(self) -> dict[str, float | int]:
+        return {
+            "batches": self._batch_count,
+            "samples": self._sample_count,
+            "average_actual_batch": self._sample_count / self._batch_count
+            if self._batch_count
+            else 0.0,
+            "configured_batch_size": self._batch_size,
+            "batch_utilization": self._sample_count
+            / (self._batch_count * self._batch_size)
+            if self._batch_count
+            else 0.0,
+        }
 
     async def start(self) -> None:
         loop = asyncio.get_running_loop()
@@ -147,6 +163,8 @@ class ClsPipeline:
 
     async def _infer(self, images: list[HWCImage]) -> list[ClsResult]:
         assert self._session is not None
+        self._batch_count += 1
+        self._sample_count += len(images)
         tensor = np.zeros((self._batch_size, *self._shape), np.float32)
         for i, image in enumerate(images):
             tensor[i] = self._prepare(image)

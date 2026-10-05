@@ -35,7 +35,8 @@ class TestClsPipeline(unittest.TestCase):
                 }
             )
             with patch(
-                "rapidocr.v2.cls_pipeline.get_engine", return_value=lambda cfg: session
+                "rapidocr.v2.cls_pipeline.core.get_engine",
+                return_value=lambda cfg: session,
             ):
                 pipeline = ClsPipeline(cfg, batch_size=4, max_wait=0.005)
             await pipeline.start()

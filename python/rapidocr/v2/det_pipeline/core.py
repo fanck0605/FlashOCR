@@ -9,10 +9,10 @@ from typing import TYPE_CHECKING, Literal, cast
 import cv2
 import numpy as np
 
-from ..ch_ppocr_det.utils import DBPostProcess, DetPreProcess, TextDetOutput
-from ..inference_engine.base import InferSession, get_engine
-from ..utils.process_img import get_rotate_crop_image
-from .typing import HWCImage
+from ...ch_ppocr_det.utils import DBPostProcess, DetPreProcess, TextDetOutput
+from ...inference_engine.base import InferSession, get_engine
+from ...utils.process_img import get_rotate_crop_image
+from ..typing import HWCImage
 
 if TYPE_CHECKING:
     import sys
@@ -102,6 +102,22 @@ class DetPipeline:
         self._worker: asyncio.Task[None] | None = None
         self._closed = False
         self._inflight: set[asyncio.Task[None]] = set()
+        self._batch_count = 0
+        self._sample_count = 0
+
+    def batch_stats(self) -> dict[str, float | int]:
+        return {
+            "batches": self._batch_count,
+            "samples": self._sample_count,
+            "average_actual_batch": self._sample_count / self._batch_count
+            if self._batch_count
+            else 0.0,
+            "configured_batch_size": self._batch_size,
+            "batch_utilization": self._sample_count
+            / (self._batch_count * self._batch_size)
+            if self._batch_count
+            else 0.0,
+        }
 
     async def start(self) -> None:
         loop = asyncio.get_running_loop()
@@ -200,6 +216,8 @@ class DetPipeline:
         items: list[HWCImage],
     ) -> list[DetResult]:
         assert self._session is not None
+        self._batch_count += 1
+        self._sample_count += len(items)
         bh, bw = bucket
         pre = self._preprocess
         tensor: np.ndarray[tuple[int, Literal[3], int, int], np.dtype[np.float32]] = (

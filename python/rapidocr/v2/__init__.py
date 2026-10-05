@@ -8,16 +8,16 @@ from .det_pipeline import generate_det_buckets
 from .rec_pipeline import generate_rec_buckets
 
 if TYPE_CHECKING:
-    from .api import RapidOCRv2
+    from .api import FlashOCR
 
-__all__ = ["RapidOCRv2", "generate_det_buckets", "generate_rec_buckets"]
+__all__ = ["FlashOCR", "generate_det_buckets", "generate_rec_buckets"]
 
 
-def __getattr__(name: str) -> type[RapidOCRv2]:
-    if name == "RapidOCRv2":
-        from .api import RapidOCRv2
+def __getattr__(name: str) -> type[FlashOCR]:
+    if name == "FlashOCR":
+        from .api import FlashOCR
 
-        return RapidOCRv2
+        return FlashOCR
     raise AttributeError(name)
 
 

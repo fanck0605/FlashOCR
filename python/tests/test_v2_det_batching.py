@@ -17,7 +17,7 @@ class TestDetBatching(unittest.IsolatedAsyncioTestCase):
         cfg = OmegaConf.create(
             {"limit_side_len": 960, "limit_type": "max", "engine_type": "fake"}
         )
-        with patch("rapidocr.v2.det_pipeline.get_engine", return_value=Mock()):
+        with patch("rapidocr.v2.det_pipeline.core.get_engine", return_value=Mock()):
             pipeline = DetPipeline(
                 cfg,
                 [(32, 32), (64, 64)],

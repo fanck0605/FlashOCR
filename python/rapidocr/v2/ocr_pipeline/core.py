@@ -5,28 +5,28 @@ from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
-from ..cal_rec_boxes import CalRecBoxes
-from ..ch_ppocr_cls import TextClsOutput
-from ..ch_ppocr_det import TextDetOutput
-from ..utils.output import RapidOCROutput
-from ..utils.process_img import (
+from ...cal_rec_boxes import CalRecBoxes
+from ...ch_ppocr_cls import TextClsOutput
+from ...ch_ppocr_det import TextDetOutput
+from ...utils.output import RapidOCROutput
+from ...utils.process_img import (
     apply_vertical_padding,
     map_boxes_to_original,
     map_img_to_original,
     resize_image_within_bounds,
 )
-from ..utils.vis_res import VisRes
-from .cls_pipeline import ClsPipeline
-from .det_pipeline import DetPipeline, generate_det_buckets
-from .rec_pipeline import RecPipeline, generate_rec_buckets
+from ...utils.vis_res import VisRes
+from ..cls_pipeline import ClsPipeline
+from ..det_pipeline import DetPipeline, generate_det_buckets
+from ..rec_pipeline import RecPipeline, generate_rec_buckets
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
     from omegaconf import DictConfig
 
-    from ..ch_ppocr_rec import TextRecOutput
-    from .typing import HWCImage
+    from ...ch_ppocr_rec import TextRecOutput
+    from ..typing import HWCImage
 
 
 class OCRPipeline:
@@ -37,10 +37,10 @@ class OCRPipeline:
         cfg: DictConfig,
         *,
         det_buckets: Iterable[tuple[int, int]] = generate_det_buckets(160, 640, 16),
-        rec_buckets: Iterable[int] = generate_rec_buckets(3840, 16),
+        rec_buckets: Iterable[int] = generate_rec_buckets(3840, 8),
         det_batch_size: int = 4,
         det_concurrency: int = 1,
-        rec_batch_size: int = 16,
+        rec_batch_size: int = 32,
         rec_concurrency: int = 1,
         cls_batch_size: int = 16,
         cls_concurrency: int = 1,

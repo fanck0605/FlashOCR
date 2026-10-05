@@ -10,15 +10,15 @@ from typing import TYPE_CHECKING, cast
 import cv2
 import numpy as np
 
-from ..ch_ppocr_rec.typings import TextRecOutput, WordInfo
-from ..ch_ppocr_rec.utils import CTCLabelDecode
-from ..inference_engine.base import FileInfo, InferSession, get_engine
-from ..utils.download_file import DownloadFile, DownloadFileInput
-from ..utils.log import logger
-from ..utils.model_resolver import normalize_lang
-from ..utils.typings import LangRec
-from ..utils.utils import reorder_bidi_for_display, validate_rtl_dependency
-from .typing import HWCImage
+from ...ch_ppocr_rec.typings import TextRecOutput, WordInfo
+from ...ch_ppocr_rec.utils import CTCLabelDecode
+from ...inference_engine.base import FileInfo, InferSession, get_engine
+from ...utils.download_file import DownloadFile, DownloadFileInput
+from ...utils.log import logger
+from ...utils.model_resolver import normalize_lang
+from ...utils.typings import LangRec
+from ...utils.utils import reorder_bidi_for_display, validate_rtl_dependency
+from ..typing import HWCImage
 
 if TYPE_CHECKING:
     import sys
@@ -53,18 +53,23 @@ class RecPipeline:
         self,
         cfg: DictConfig,
         buckets: Iterable[int],
-        batch_size: int = 16,
+        batch_size: int = 32,
         max_wait: float = 0.02,
         return_word_box: bool = False,
         concurrency: int = 1,
     ) -> None:
+        if (
+            type(batch_size) is not int
+            or batch_size < 1
+            or batch_size & (batch_size - 1)
+        ):
+            raise ValueError("Recognition batch size must be a power of two")
         if concurrency < 1:
             raise ValueError("Recognition concurrency must be positive")
         self._is_arabic = normalize_lang(cfg.lang_type) == LangRec.ARABIC.value
         self._rec_keys_path: str | Path | None = cfg.get("rec_keys_path")
         self._model_root_dir = Path(
-            cfg.get("model_root_dir")
-            or Path(__file__).resolve().parent.parent / "models"
+            cfg.get("model_root_dir") or Path(__file__).resolve().parents[2] / "models"
         )
         self._file_info = FileInfo(
             engine_type=cfg.engine_type,
@@ -94,18 +99,38 @@ class RecPipeline:
         self._closed = False
         self._img_shape: tuple[int, int, int] = tuple(cfg.rec_img_shape)
         self._postprocess: CTCLabelDecode | None = None
+        self._batch_count = 0
+        self._sample_count = 0
+
+    def batch_stats(self) -> dict[str, float | int]:
+        return {
+            "batches": self._batch_count,
+            "samples": self._sample_count,
+            "average_actual_batch": self._sample_count / self._batch_count
+            if self._batch_count
+            else 0.0,
+            "configured_batch_size": self._batch_size,
+            "batch_utilization": self._sample_count
+            / (self._batch_count * self._batch_size)
+            if self._batch_count
+            else 0.0,
+        }
 
     async def start(self) -> None:
         loop = asyncio.get_running_loop()
         character, path = self._load_characters()
         self._postprocess = CTCLabelDecode(character=character, character_path=path)
         c, h, _ = self._img_shape
+        batch_sizes = tuple(
+            1 << exponent for exponent in range(self._batch_size.bit_length())
+        )
         for w in self._widths:
-            await loop.run_in_executor(
-                self._executor,
-                self._session,
-                np.zeros((self._batch_size, c, h, w), np.float32),
-            )
+            for batch_size in batch_sizes:
+                await loop.run_in_executor(
+                    self._executor,
+                    self._session,
+                    np.zeros((batch_size, c, h, w), np.float32),
+                )
         self._worker = loop.create_task(self._run_batches())
 
     def _load_characters(self) -> tuple[list[str] | None, str | Path | None]:
@@ -144,6 +169,10 @@ class RecPipeline:
             oldest = float("inf")
             deadline = float("inf")
             for width, queue in self._queues.items():
+                if any(future.cancelled() for _, _, future in queue):
+                    active = [item for item in queue if not item[2].cancelled()]
+                    queue.clear()
+                    queue.extend(active)
                 if not queue:
                     continue
                 arrived = queue[0][0]
@@ -166,7 +195,8 @@ class RecPipeline:
                 continue
             queue = self._queues[selected]
             pending: list[tuple[HWCImage, asyncio.Future[RecResult]]] = []
-            for _ in range(min(len(queue), self._batch_size)):
+            batch_size = 1 << (min(len(queue), self._batch_size).bit_length() - 1)
+            for _ in range(batch_size):
                 _, image, future = queue.popleft()
                 if not future.cancelled():
                     pending.append((image, future))
@@ -223,8 +253,10 @@ class RecPipeline:
         images: list[HWCImage],
     ) -> list[RecResult]:
         assert self._session is not None and self._postprocess is not None
+        self._batch_count += 1
+        self._sample_count += len(images)
         c, h, _ = self._img_shape
-        tensor = np.zeros((self._batch_size, c, h, width), np.float32)
+        tensor = np.zeros((len(images), c, h, width), np.float32)
         ratios = [img.shape[1] / img.shape[0] for img in images]
         max_ratio = width / h
         for i, image in enumerate(images):
